@@ -1,0 +1,8 @@
+{
+  "sampleRate": 48000,
+  "stereoToneDuration": 4,
+  "leftFrequencyHz": 440,
+  "rightFrequencyHz": 660,
+  "toneAmplitude": 0.4,
+  "nativeFFmpeg": true
+}

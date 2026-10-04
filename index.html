@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>송쌤과학 음원 변환 스튜디오</title>
+<meta name="description" content="영상 속 소리를 꺼내고, MP3·WAV·M4A·FLAC·OGG·Opus 등 18가지 형식으로 바꾸고, 음원을 영상으로 만들고, 간편하게 편집하세요. 파일은 내 기기의 브라우저 안에서만 처리됩니다.">
+<meta property="og:title" content="송쌤과학 음원 변환 스튜디오">
+<meta property="og:description" content="영상 속 소리를 꺼내고, 원하는 형식으로 바꾸고, 간편하게 편집하세요. 파일은 내 기기의 브라우저 안에서만 처리됩니다.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#754021">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23754021'/%3E%3Cpath d='M8 13v6m5-12v18m6-21v24m5-18v12' stroke='%23ffdfb7' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+<script src="theme.js"></script>
+<link rel="stylesheet" href="style.css">
+<script defer src="model.js"></script><script defer src="engine.js"></script><script defer src="app.js"></script>
+</head>
+<body>
+<a class="skip-link" href="#workspace">작업 화면으로 건너뛰기</a>
+<div class="top-bar">
+<button class="file-current" data-action="open"><span data-icon="folder"></span><small>열린 파일</small><strong id="topFile">파일을 선택해 주세요</strong><span data-icon="chevronDown"></span></button>
+<button class="bar-accent" data-action="batch"><span data-icon="layers"></span><span>여러 파일 일괄 변환</span></button>
+<button class="local-badge" data-action="privacy"><span data-icon="lock"></span><span>내 기기에서만 처리</span></button>
+<div class="social"><a href="https://www.youtube.com/@songsamscience" target="_blank" rel="noopener noreferrer" aria-label="송쌤과학 유튜브 (새 탭)"><span data-icon="youtube"></span></a><a href="https://www.instagram.com/songsamscience/" target="_blank" rel="noopener noreferrer" aria-label="송쌤과학 인스타그램 (새 탭)"><span data-icon="instagram"></span></a></div>
+<div class="spacer"></div><button data-action="undo" id="undoBtn" title="실행 취소 (Ctrl/Cmd+Z)" disabled><span data-icon="undo"></span><span>실행 취소</span></button><button data-action="redo" id="redoBtn" title="다시 실행 (Ctrl/Cmd+Shift+Z)" disabled><span data-icon="redo"></span><span>다시 실행</span></button><button data-action="clear" title="작업 데이터 지우기"><span data-icon="trash"></span></button>
+</div>
+<header class="app-header">
+<a class="brand" href="#" data-action="home"><span class="brand-mark" data-icon="audio"></span><span><strong>송쌤과학</strong><small>AUDIO STUDIO</small></span></a>
+<div class="header-context"><span class="header-divider"></span><span>음원 변환 스튜디오</span><span class="sub">18가지 형식 · 영상 만들기 · 수업용 편집</span></div>
+<div class="header-actions"><button class="btn" data-action="project"><span data-icon="save"></span><span>작업 설정</span></button><button class="btn primary" data-action="export" id="headerExport" disabled><span data-icon="download"></span><span>변환·내보내기</span></button><button class="utility-btn" data-action="help" aria-label="사용 도움말"><span data-icon="help"></span></button><button class="utility-btn" data-action="theme" aria-label="밝은 화면·어두운 화면 전환"><span data-icon="moon"></span></button></div>
+</header>
+<div class="app-body">
+<aside class="rail" aria-label="편집 도구">
+<div class="rail-heading">음원 작업 도구 <span class="rail-count">8</span></div>
+<div class="rail-group">기본 작업</div>
+<button class="nav-item active" data-tool="convert" aria-current="page"><span data-icon="repeat"></span><span>음원 변환</span><kbd>1</kbd></button>
+<button class="nav-item" data-tool="edit"><span data-icon="scissors"></span><span>파형·구간 편집</span><kbd>2</kbd></button>
+<button class="nav-item" data-tool="effects"><span data-icon="sliders"></span><span>소리 보정</span><kbd>3</kbd></button>
+<div class="rail-group">수업을 더 풍성하게</div>
+<button class="nav-item" data-tool="mix"><span data-icon="layers"></span><span>목소리 + 배경음</span><kbd>4</kbd></button>
+<button class="nav-item" data-tool="classroom"><span data-icon="bookmark"></span><span>수업용 구간 도구</span><kbd>5</kbd></button>
+<button class="nav-item" data-tool="speed"><span data-icon="gauge"></span><span>속도·음높이·역재생</span><kbd>6</kbd></button>
+<div class="rail-group">모으고 기록하기</div>
+<button class="nav-item" data-tool="record"><span data-icon="mic"></span><span>마이크 녹음</span><kbd>7</kbd></button>
+<button class="nav-item" data-tool="batch"><span data-icon="files"></span><span>일괄 변환</span><kbd>8</kbd></button>
+<div class="rail-bottom"><div class="rail-note"><span data-icon="shield"></span><div><strong>내 파일은 내 기기에.</strong><p>가입 없이, 서버 전송 없이<br>브라우저에서 안전하게.</p></div></div><button class="rail-open" data-action="open"><span data-icon="folder"></span><span>새 파일 열기<small>파일을 끌어 놓아도 좋아요</small></span><span data-icon="plus"></span></button></div>
+</aside>
+<main id="workspace" tabindex="-1">
+<div class="breadcrumb"><span data-icon="headphones"></span><span id="crumbFile">나의 음원 작업실</span><span class="slash">/</span><strong id="crumbTool">음원 변환</strong><span class="spacer"></span><span class="pill" id="filePill">파일 선택 대기</span></div>
+<section id="welcome" class="welcome">
+<div class="story"><span class="eyebrow">YOUR SOUND, YOUR CLASSROOM</span><h1>수업에 필요한 소리,<br>가볍게 꺼내 쓰세요.</h1><p>영상 속 소리를 꺼내고, 원하는 형식으로 바꾸고,<br>필요한 부분만 간편하게 편집하세요.</p><div class="story-preview"><div class="preview-caption"><span>소리가 수업이 되는 순서</span><span>ALL IN YOUR BROWSER</span></div><div class="preview-steps"><div><span>01</span><span data-icon="folder"></span><small>파일 선택</small></div><div><span>02</span><span data-icon="scissors"></span><small>편집·보정</small></div><div class="chosen"><span>03</span><span data-icon="headphones"></span><small>전후 듣기</small></div><div><span>04</span><span data-icon="download"></span><small>변환·저장</small></div></div><div class="preview-bottom"><span>영상에서 음원까지, 한 곳에서.</span><strong>MP3 · WAV · MP4 · +15</strong></div></div><div class="story-foot"><span data-icon="lock"></span>올려 보내지 않으니, 걱정도 없이.</div></div>
+<div class="start-panel" id="dropZone"><span class="start-icon" data-icon="audio"></span><span class="eyebrow">LET’S GET STARTED</span><h2>어떤 소리를 바꿔 볼까요?</h2><p>영상이나 음원을 선택하면<br>내 기기에서 바로 작업을 시작합니다.</p><div class="feature-chips"><span>MP3로</span><span>영상에서 소리 꺼내기</span><span>다른 음원 형식으로</span><span>영상 만들기</span></div><p class="start-note">파일을 넣으면 영상인지 음원인지, 어떤 형식인지 확인한 뒤 <strong>그 파일에 맞는 변환 메뉴</strong>를 보여 드려요.</p><button class="drop-select" data-action="open"><span data-icon="upload"></span><strong>내 기기에서 파일 선택</strong><span>또는 파일을 여기에 끌어 놓으세요</span><small>MP4 · MOV · MKV · WebM · MP3 · WAV · M4A · FLAC · OGG · Opus · WMA · AIFF 등</small></button><div class="start-bottom"><button class="text-btn" data-action="record"><span data-icon="mic"></span>직접 녹음하기</button><span class="sub">파일당 최대 120 MB</span></div><p class="privacy-small"><span data-icon="lock"></span>영상과 음원은 서버에 전송되거나 저장되지 않습니다.</p></div>
+</section>
+<div id="workbench" class="workbench" hidden>
+<section class="settings card" aria-label="작업 설정"><div class="settings-head"><span class="eyebrow" id="panelEyebrow">CONVERT AUDIO</span><h2 id="panelTitle">음원 변환</h2><p id="panelDescription">소리를 담을 형식과 용량을 선택하세요.</p></div><div id="panelBody"></div></section>
+<div class="main-stage">
+<section id="convertMenu" class="catalog convert-menu" aria-labelledby="menuTitle" hidden></section>
+<section class="audio-card card">
+<div class="stage-header"><div><span class="eyebrow">AUDIO WORKSPACE</span><h2 id="sourceName">선택한 음원</h2></div><button class="btn" data-action="append" title="다른 파일을 끝에 이어 붙이기"><span data-icon="plus"></span>이어 붙이기</button></div>
+<div class="source-meta" id="sourceMeta"></div>
+<div class="audio-track-picker" id="trackPicker" hidden></div>
+<div class="wave-toolbar"><div class="seg" aria-label="듣는 대상"><button data-listen="original" class="on" aria-pressed="true">원본 A</button><button data-listen="edited" aria-pressed="false">편집본 B</button><button data-listen="final" aria-pressed="false" id="listenFinal" disabled>최종 파일</button></div><span class="spacer"></span><button class="btn icon" data-action="zoomOut" aria-label="파형 축소"><span data-icon="minus"></span></button><span id="zoomLabel">전체</span><button class="btn icon" data-action="zoomIn" aria-label="파형 확대"><span data-icon="plus"></span></button><button class="btn" data-action="zoomSelection" title="선택한 구간이 화면에 꽉 차게 확대" aria-label="선택 구간 보기"><span data-icon="fit"></span><span class="wide-label">선택 구간</span></button><button class="btn" data-action="zoomReset">전체 보기</button></div>
+<div class="wave-wrap" id="waveWrap" tabindex="0" role="group" aria-label="파형 편집 영역. 드래그로 구간 선택. 시간 입력으로도 선택할 수 있습니다."><canvas id="waveCanvas" aria-label="실제 음원 파형"></canvas><div id="waveEmpty" hidden>파일을 선택하면 파형을 볼 수 있어요.</div></div><input type="range" id="waveScroll" min="0" max="1" step=".001" value="0" aria-label="확대한 파형 위치" hidden>
+<div class="wave-caption"><span id="waveCaption">파형을 드래그해 구간을 선택하세요.</span><span id="peakLabel">샘플 피크 —</span></div>
+<div class="selection-fields"><label>시작 <input id="selectionStart" type="number" min="0" step=".001" value="0" aria-label="선택 시작 시간 (초)"> <span>초</span></label><label>끝 <input id="selectionEnd" type="number" min="0" step=".001" value="0" aria-label="선택 종료 시간 (초)"> <span>초</span></label><div class="selection-length">선택 길이 <strong id="selectionLength">00:00.000</strong></div><button class="btn" data-action="selectAll">전체 선택</button></div>
+<div class="quick-tools"><button class="btn" data-action="trim"><span data-icon="scissors"></span>선택만 남기기</button><button class="btn" data-action="delete"><span data-icon="trash"></span>선택 삭제</button><button class="btn" data-action="silence"><span data-icon="volumeOff"></span>무음 처리</button><button class="btn" data-action="split"><span data-icon="split"></span>분할</button><span class="spacer"></span><button class="text-btn" data-action="previewSelection"><span data-icon="headphones"></span>이 구간 미리 듣기</button></div>
+<div class="playback">
+<div class="transport"><button class="btn icon" data-action="start" aria-label="처음으로"><span data-icon="skip"></span></button><button class="btn icon" data-action="back" aria-label="5초 뒤로"><span data-icon="back"></span></button><button class="play-btn" data-action="play" id="playBtn" aria-label="재생 (Space)"><span data-icon="play"></span></button><button class="btn icon" data-action="forward" aria-label="5초 앞으로"><span data-icon="forward"></span></button><button class="btn icon" data-action="stop" aria-label="정지"><span data-icon="stop"></span></button><div class="time-display"><strong id="currentTime">00:00.000</strong><span>/ <span id="totalTime">00:00.000</span></span></div><span class="spacer"></span><label class="loop-check"><input type="checkbox" id="playSelection">선택만 듣기</label><label class="loop-check"><input type="checkbox" id="loop">반복 듣기</label></div>
+<input id="seek" type="range" min="0" max="1" step=".001" value="0" aria-label="재생 위치">
+<label class="loop-check" style="margin-bottom:8px"><input id="matchVolume" type="checkbox">비슷한 음량으로 A/B 비교 (저장에는 미반영)</label><div class="listen-options"><button class="text-btn" data-action="mute" id="muteBtn" aria-label="듣기 음소거"><span data-icon="volume"></span></button><input type="range" id="listenVolume" min="0" max="1" step=".01" value=".8" aria-label="듣기 음량"><label>확인용 속도 <select id="listenSpeed"><option value=".5">0.5×</option><option value=".75">0.75×</option><option selected value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label><span class="meter-label">L <meter id="meterL" min="0" max="1" value="0"></meter> R <meter id="meterR" min="0" max="1" value="0"></meter></span></div><p class="tiny sub">듣기 음량과 확인용 속도는 저장 결과에 영향을 주지 않습니다. 확인용 속도를 바꾸면 음높이도 함께 바뀝니다.</p>
+</div>
+</section>
+<section class="clips-card card"><div class="section-row"><h3>편집 구간</h3><span class="sub" id="clipSummary">원본을 그대로 사용해요</span></div><div id="clipList"></div></section>
+<section class="result-card card" id="resultCard" hidden></section>
+<div class="hint studio-hint"><span data-icon="info"></span><p><strong>원본은 그대로, 편집은 자유롭게.</strong> 언제든 실행 취소할 수 있습니다. 설정을 바꾼 뒤에는 편집본 듣기 또는 변환으로 새 결과를 확인하세요.</p></div>
+</div>
+</div>
+<section id="auxPanel" class="card aux-panel" hidden></section>
+<footer><span>© 2026 송쌤과학</span><span>영상과 음원은 서버에 전송되거나 저장되지 않습니다. 선택한 파일은 이 기기의 브라우저 안에서 처리됩니다.</span><button class="text-btn" data-action="help">사용 안내</button></footer>
+</main>
+</div>
+<input id="fileInput" type="file" hidden accept="audio/*,video/*,.mkv,.flac,.opus,.m4a,.ogg,.oga,.wma,.aiff,.aif,.caf,.au,.ac3,.mp2,.aac,.webm,.m4r,.amr,.mov,.mp4,.m4v"><input id="appendInput" type="file" hidden multiple accept="audio/*,video/*,.mkv,.flac,.opus,.m4a,.ogg,.wma,.aiff,.aif,.caf,.au,.ac3,.mp2,.aac,.webm"><input id="mixInput" type="file" hidden accept="audio/*,video/*,.mkv,.flac,.opus,.m4a,.ogg,.wma,.aiff,.aif,.caf,.au,.ac3,.mp2,.aac,.webm"><input id="batchInput" type="file" hidden multiple accept="audio/*,video/*,.mkv,.flac,.opus,.m4a,.ogg,.wma,.aiff,.aif,.caf,.au,.ac3,.mp2,.aac,.webm"><input id="projectInput" type="file" hidden accept=".json,application/json"><input id="coverInput" type="file" hidden accept="image/png,image/jpeg,image/webp">
+<dialog id="modal" aria-labelledby="modalTitle"><div id="modalContent"></div></dialog>
+<div id="busy" class="busy" hidden role="status" aria-live="polite"><div class="busy-inner"><span class="spinner"></span><div><strong id="busyText">처리 도구 준비 중</strong><p id="busyTime">0초 경과</p></div><button class="btn" id="cancelBtn" data-action="cancel">작업 취소</button></div></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<noscript>음원 도구를 사용하려면 브라우저에서 JavaScript를 켜 주세요.</noscript>
+</body></html>

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>엔진 기능 조사</title>
+<style>body{font:13px/1.5 system-ui,'Malgun Gothic',sans-serif;margin:20px;color:#392b21;background:#f7f5f1}pre{background:#fff;border:1px solid #e7dfd4;border-radius:10px;padding:14px;white-space:pre-wrap;word-break:break-all}h2{font-size:15px;margin:18px 0 6px}</style>
+</head>
+<body>
+<h1>번들된 FFmpeg 코어 기능 조사</h1>
+<p>vendor/ffmpeg-core.js 를 Worker에서 열어 인코더·먹서·필터 목록과 실제 인코딩 시험 결과를 표시합니다. 합성 신호만 사용하며 파일은 어디로도 보내지 않습니다.</p>
+<p id="state">준비 중…</p>
+<h2>실제 인코딩 시험</h2><pre id="trials"></pre>
+<h2>버전·빌드</h2><pre id="version"></pre>
+<h2>인코더</h2><pre id="encoders"></pre>
+<h2>먹서</h2><pre id="muxers"></pre>
+<h2>필터</h2><pre id="filters"></pre>
+<h2>디코더</h2><pre id="decoders"></pre>
+<h2>디먹서</h2><pre id="demuxers"></pre>
+<script src="engine-caps.js"></script>
+</body>
+</html>

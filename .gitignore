@@ -1,0 +1,16 @@
+# 운영체제·편집기 부산물
+.DS_Store
+Thumbs.db
+desktop.ini
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+node_modules/
+
+# 저장소에 올리지 않는 작업 파일
+.claude/
+archive-v*/
+tests/artifacts/
+*.zip
+송쌤과학_음원변환사이트_전체제작프롬프트.txt
