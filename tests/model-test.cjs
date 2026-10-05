@@ -339,4 +339,23 @@ test('engine graph: fixed-gain channel conversion, fades before pads, background
   const bg = vm.runInContext('buildGraph(testModel,{rate:48000,channels:2}).graph', context);
   assert.ok(bg.includes('afade=t=out:st=2:d=2'), 'music cut at 4 s by the voice fades out over its last 2 s');
 });
+test('engine graph: pieces seek where the container is exact, read MP3 from the start, reordered pieces get their own input', () => {
+  const context = vm.createContext({ importScripts() {}, self: { postMessage() {} }, Map, Set, console });
+  vm.runInContext(fs.readFileSync(require.resolve('../engine-worker.js'), 'utf8'), context);
+  const long = (id, container, codec) => ({ id, metadata: { duration: 3600, sampleRate: 48000, channels: 1, codec, container } });
+  context.testSources = [long('w', 'wav', 'pcm_s16le'), long('p', 'mp3', 'mp3')];
+  vm.runInContext('for (const s of testSources) sources.set(s.id, { path:s.id+".media", metadata:s.metadata, track:0 });', context);
+  const pieces = (id, ranges) => { const m = M.create(context.testSources.find(s => s.id === id)); m.clips = ranges.map(([start, end]) => ({ ...m.clips[0], start, end })); return m; };
+  context.testModel = pieces('w', [[1800, 1900], [1950, 2000], [100, 200]]);
+  let built = vm.runInContext('buildGraph(testModel,{rate:48000,channels:1})', context);
+  assert.deepEqual(built.args, ['-ss', '1799', '-i', 'w.media', '-ss', '99', '-i', 'w.media'], 'WAV: seek near the first piece, reuse it for the next, new input for the piece that goes back');
+  assert.ok(built.graph.includes('[0:a:0]atrim=start=1:end=101') && built.graph.includes('[0:a:0]atrim=start=151:end=201') && built.graph.includes('[1:a:0]atrim=start=1:end=101'), 'trims are relative to each input\'s seek point');
+  context.testModel = pieces('w', [[10, 20], [2000, 2010]]);
+  built = vm.runInContext('buildGraph(testModel,{rate:48000,channels:1})', context);
+  assert.deepEqual(built.args, ['-ss', '9', '-i', 'w.media', '-ss', '1999', '-i', 'w.media'], 'a far jump ahead opens a new input at the piece');
+  context.testModel = pieces('p', [[1800, 1900], [100, 200]]);
+  built = vm.runInContext('buildGraph(testModel,{rate:48000,channels:1})', context);
+  assert.deepEqual(built.args, ['-i', 'p.media', '-i', 'p.media'], 'MP3: no seeking, but the piece that goes back still gets its own input');
+  assert.ok(built.graph.includes('[0:a:0]atrim=start=1800:end=1900') && built.graph.includes('[1:a:0]atrim=start=100:end=200'));
+});
 console.log(`\n${count} model tests passed.`);

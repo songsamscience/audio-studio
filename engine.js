@@ -2,7 +2,35 @@
 (() => {
   'use strict';
   const BASE = new URL('.', document.currentScript.src);
+  // Decoded sound from the engine: 16-bit interleaved PCM in Blob parts of `partFrames` frames. Only the parts being
+  // played become AudioBuffers (a few at a time), so a three-hour recording never has to fit in memory as float.
+  class PcmTrack {
+    constructor({rate, channels, frames, partFrames, parts, rms = 0, peak = 0}) {
+      Object.assign(this, {sampleRate: rate, numberOfChannels: channels, length: frames, partFrames, parts, rms, peak});
+      this.duration = frames / rate; this.cache = new Map(); this.loading = new Map();
+    }
+    partAt(frame) { return Math.max(0, Math.min(this.parts.length - 1, Math.floor(frame / this.partFrames))); }
+    cached(index) { const b = this.cache.get(index); if (b) { this.cache.delete(index); this.cache.set(index, b); } return b || null; }
+    load(index) {
+      const ready = this.cached(index); if (ready) return Promise.resolve(ready);
+      if (this.loading.has(index)) return this.loading.get(index);
+      const job = this.parts[index].arrayBuffer().then(bytes => {
+        const s = new Int16Array(bytes), ch = this.numberOfChannels, n = Math.floor(s.length / ch);
+        const buffer = new AudioBuffer({length: Math.max(1, n), numberOfChannels: ch, sampleRate: this.sampleRate});
+        for (let c = 0; c < ch; c++) { const d = buffer.getChannelData(c); for (let f = 0, i = c; f < n; f++, i += ch) d[f] = s[i] / 32768; }
+        this.cache.set(index, buffer); while (this.cache.size > 8) this.cache.delete(this.cache.keys().next().value);
+        return buffer;
+      }).finally(() => this.loading.delete(index));
+      this.loading.set(index, job); return job;
+    }
+  }
+  const toTrack = pcm => pcm ? new PcmTrack(pcm) : null;
   class AudioEngine {
+    // 4 GiB, so camera clips split at the FAT32 limit (4 GiB − 1 byte) still open.
+    static MAX_FILE = 4 * 1024 ** 3;
+    // The worker reads originals on demand (WORKERFS), so a 4 GB video never has to fit in memory. Up to this many
+    // bytes are still copied once, as before, so smaller work survives the original being moved or re-saved.
+    static MAX_COPIED = 200000000;
     constructor(onStatus = () => {}) {
       this.onStatus = onStatus; this.sources = new Map(); this.pending = new Map();
       this.serial = Promise.resolve(); this.sequence = 0; this.generation = 0; this.worker = null;
@@ -27,9 +55,8 @@
         await this._request('init');
         if (generation !== this.generation) throw this._cancelError();
         for (const source of this.sources.values()) {
-          const bytes = new Uint8Array(await source.file.arrayBuffer());
           if (generation !== this.generation) throw this._cancelError();
-          await this._request('restore', {id:source.id, bytes, metadata:source.metadata, track:source.track}, [bytes.buffer]);
+          await this._request('restore', {id:source.id, file:source.data, metadata:source.metadata, track:source.track});
         }
       } catch (e) { if (this.worker === worker) { worker.terminate(); this.worker = null; } throw e; }
     }
@@ -44,26 +71,32 @@
       this.serial = promise.catch(() => {}); return promise;
     }
     capabilities() { return this._queue(() => this._request('capabilities')); }
+    // options: replacing (the file replaces the current work), pcmRate (playback rate), pcm:false (only measure).
     analyze(file, track = 0, options = {}) {
       return this._queue(async generation => {
         if (!file || !file.size) throw new Error('빈 파일은 열 수 없습니다. 소리가 담긴 파일을 선택해 주세요.');
-        if (file.size > 120000000) throw new Error('한 파일은 120 MB까지 열 수 있습니다. 긴 영상은 먼저 짧게 나누거나 작은 파일로 준비해 주세요.');
+        if (file.size > AudioEngine.MAX_FILE) throw new Error('한 파일은 4 GB까지 열 수 있습니다. 더 큰 영상은 먼저 나눠서 준비해 주세요.');
         // When the new file replaces the current work, the old sources are released right after it opens.
-        const total = options.replacing ? 0 : [...this.sources.values()].reduce((n,s) => n+s.file.size, 0);
-        if (total + file.size > 200000000) throw new Error('현재 작업의 원본 총용량(되돌리기용 원본 포함)이 200 MB를 넘습니다. 더 작은 파일을 쓰거나 「작업 데이터 지우기」 뒤 새 작업으로 시작해 주세요.');
-        const id = `source_${Date.now().toString(36)}_${++this.sequence}`;
-        const bytes = new Uint8Array(await file.arrayBuffer());
+        const copiedBytes = options.replacing ? 0 : [...this.sources.values()].reduce((n,s) => n+(s.copied?s.data.size:0), 0);
+        const copied = copiedBytes + file.size <= AudioEngine.MAX_COPIED;
+        const data = copied ? new Blob([await file.arrayBuffer()], {type:file.type}) : file;
         if (generation !== this.generation) throw this._cancelError();
-        const result = await this._request('analyze', {id,bytes,track:Number(track)||0}, [bytes.buffer]);
-        this.sources.set(id,{id,file,track:Number(track)||0,metadata:result.metadata});
-        return {...result, originalName:file.name || '녹음.webm', size:file.size};
+        const id = `source_${Date.now().toString(36)}_${++this.sequence}`;
+        const result = await this._request('analyze', {id,file:data,track:Number(track)||0,pcmRate:options.pcmRate,pcm:options.pcm});
+        this.sources.set(id,{id,data,copied,track:Number(track)||0,metadata:result.metadata});
+        return {...result, pcm:toTrack(result.pcm), originalName:file.name || '녹음.webm', size:file.size};
       });
     }
-    render(model, output = {}, options = {}) { return this._queue(() => this._request('render', {model:structuredClone(model),output:{...output},options:{...options}})); }
-    decodeResult(bytes, extension = 'bin') {
-      return this._queue(() => { const copy = new Uint8Array(bytes); return this._request('decode', {bytes:copy,extension}, [copy.buffer]); });
+    // Result: {blob, size, mime, extension, metadata, summary, pcm}; with options.preview only {pcm, metadata, summary},
+    // with options.analysis only {envelope}. options.listen adds the decoded result (pcm) for 최종 파일 듣기.
+    async render(model, output = {}, options = {}) {
+      const result = await this._queue(() => this._request('render', {model:structuredClone(model),output:{...output},options:{...options}}));
+      return {...result, pcm:toTrack(result.pcm)};
     }
-    extractCopy(sourceId, {start=0,end=null,format=null,metadataMode='remove'}={}) { return this._queue(() => this._request('copy', {sourceId,start,end,format,metadataMode})); }
+    async extractCopy(sourceId, {start=0,end=null,format=null,metadataMode='remove',listen=false,pcmRate=48000}={}) {
+      const result = await this._queue(() => this._request('copy', {sourceId,start,end,format,metadataMode,listen,pcmRate}));
+      return {...result, pcm:toTrack(result.pcm)};
+    }
     removeSource(id) { this.sources.delete(id); if (!this.worker) return Promise.resolve(); return this._queue(() => this._request('remove',{id})); }
     cancel() {
       ++this.generation;

@@ -136,7 +136,7 @@
     });
     await test('R18 엔진을 150번 연속 써도 멈추지 않음', async () => {
       const eng = new AudioEngine(), f = await fixture('tone-mono-22050.wav', 'audio/wav'), a = await eng.analyze(f), m = window.StudioModel.edit(window.StudioModel.create(a), 'trim', { start: 0, end: .3 });
-      const t0 = performance.now(); let done = 0; for (let i = 0; i < 150; i++) { const r = await eng.render(m, { format: i % 2 ? 'mp3' : 'wav', bitrate: 128 }); if (r.bytes.length > 64) done++; }
+      const t0 = performance.now(); let done = 0; for (let i = 0; i < 150; i++) { const r = await eng.render(m, { format: i % 2 ? 'mp3' : 'wav', bitrate: 128 }); if (r.size > 64) done++; }
       eng.dispose(); ok(done === 150, '성공 ' + done); return { done, seconds: Math.round((performance.now() - t0) / 1000) };
     });
     return { passed: results.filter(r => r.ok).length, failed: results.filter(r => !r.ok), results };

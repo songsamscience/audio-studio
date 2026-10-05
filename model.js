@@ -243,16 +243,16 @@
 
   // This is a measured RMS silence detector, not speech recognition. The loudest
   // channel determines silence, protecting a quiet channel beside speech.
-  function detectSilence(buffer, options = {}) {
-    if (!buffer || !buffer.numberOfChannels || !buffer.length) fail('분석할 음원 데이터가 없습니다.');
+  // The engine hands over that loudness per 10 ms window (envelope), so hours of sound never have to be in memory.
+  function silenceFromEnvelope(envelope, options = {}) {
+    const values = envelope?.values;
+    if (!values || !values.length || !(envelope.window > 0)) fail('분석할 음원 데이터가 없습니다.');
     const thresholdDb = number(options.thresholdDb ?? -42, -96, -6, '무음 기준');
     const minDuration = number(options.minDuration ?? 0.6, 0.02, 120, '최소 무음 길이');
     const padding = number(options.padding ?? 0.08, 0, 10, '남길 여백');
-    const rate = buffer.sampleRate, step = Math.max(1, Math.round(rate * 0.01));
-    const channels = Array.from({ length: buffer.numberOfChannels }, (_, i) => buffer.getChannelData(i));
-    const threshold = Math.pow(10, thresholdDb / 20), ranges = [];
+    const threshold = Math.pow(10, thresholdDb / 20), ranges = [], win = envelope.window;
+    const total = envelope.total ?? values.length * win;
     let start = null;
-    const total = buffer.length / rate;
     function finish(end) {
       if (start === null) return;
       if (end - start >= minDuration - EPS) {
@@ -264,7 +264,19 @@
       }
       start = null;
     }
-    for (let at = 0; at < buffer.length; at += step) {
+    for (let k = 0; k < values.length; k++) {
+      if (values[k] <= threshold) { if (start === null) start = k * win; }
+      else finish(k * win);
+    }
+    finish(total); return ranges;
+  }
+  // The same detector on an AudioBuffer-like object (getChannelData, sampleRate, length).
+  function detectSilence(buffer, options = {}) {
+    if (!buffer || !buffer.numberOfChannels || !buffer.length) fail('분석할 음원 데이터가 없습니다.');
+    const rate = buffer.sampleRate, step = Math.max(1, Math.round(rate * 0.01));
+    const channels = Array.from({ length: buffer.numberOfChannels }, (_, i) => buffer.getChannelData(i));
+    const values = new Float32Array(Math.ceil(buffer.length / step));
+    for (let at = 0, k = 0; at < buffer.length; at += step, k++) {
       const end = Math.min(at + step, buffer.length);
       let peakRms = 0;
       for (const ch of channels) {
@@ -272,10 +284,9 @@
         for (let i = at; i < end; i++) power += ch[i] * ch[i];
         peakRms = Math.max(peakRms, Math.sqrt(power / (end - at)));
       }
-      if (peakRms <= threshold) { if (start === null) start = at / rate; }
-      else finish(at / rate);
+      values[k] = peakRms;
     }
-    finish(total); return ranges;
+    return silenceFromEnvelope({ values, window: step / rate, total: buffer.length / rate }, options);
   }
 
   // A reversed or mixed result has no one-to-one time with the edit timeline.
@@ -481,5 +492,5 @@
     if (!sorted.length || sorted[0].time > EPS) sorted.unshift({ time: 0, name: '시작' });
     return sorted.map((b, i) => ({ name: b.name, start: b.time, end: sorted[i + 1]?.time ?? length })).filter(r => r.end - r.start > EPS);
   }
-  global.StudioModel = Object.freeze({ VERSION, MAX_PROJECT_BYTES, OUTPUT_FORMATS, VIDEO_FORMATS, PCM_FORMATS, VIDEO_SIZES, CHANNEL_MODES, create, clone, effectsDefault, timeline, baseDuration, arrangementDuration, voiceDuration, duration, checkedRange, sliceClips, edit, History, detectSilence, mapTime, reverseMapTime, validateModel, validateOutput, exportProject, importProject, safeFilename, estimateBytes, suggestBitrate, bookmarkSegments });
+  global.StudioModel = Object.freeze({ VERSION, MAX_PROJECT_BYTES, OUTPUT_FORMATS, VIDEO_FORMATS, PCM_FORMATS, VIDEO_SIZES, CHANNEL_MODES, create, clone, effectsDefault, silenceFromEnvelope, timeline, baseDuration, arrangementDuration, voiceDuration, duration, checkedRange, sliceClips, edit, History, detectSilence, mapTime, reverseMapTime, validateModel, validateOutput, exportProject, importProject, safeFilename, estimateBytes, suggestBitrate, bookmarkSegments });
 })(typeof window === 'undefined' ? globalThis : window);
