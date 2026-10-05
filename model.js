@@ -111,7 +111,7 @@
   function edit(input, operation, args = {}) {
     const m = clone(input);
     const len = baseDuration(m);
-    const op = ({ 'remove-clip': 'removeClip', 'duplicate-clip': 'duplicateClip', 'insert-silence': 'insertSilence', 'split-fixed': 'splitFixed', 'remove-ranges': 'removeRanges' })[operation] || operation;
+    const op = operation;
     if (['trim', 'delete', 'silence', 'gain', 'duplicate'].includes(op)) {
       const { start, end } = checkedRange(m, args);
       const selected = sliceClips(m, start, end);
@@ -189,7 +189,7 @@
       m.selection = { start: time, end: time + length }; m.crossfade = 0;
     } else if (op === 'removeRanges') {
       if (!Array.isArray(args.ranges)) fail('제거할 무음 구간을 먼저 확인해 주세요.');
-      const sorted = args.ranges.map(r => checkedRange(m, r)).sort((a, b) => a.start - b.start);
+      const sorted = args.ranges.map(r => checkedRange(m, { start: Math.max(0, r.start), end: r.end >= len - 0.001 ? len : r.end })).sort((a, b) => a.start - b.start);
       const merged = [];
       for (const r of sorted) {
         if (merged.length && r.start <= merged.at(-1).end) merged.at(-1).end = Math.max(merged.at(-1).end, r.end);
@@ -214,8 +214,7 @@
       for (const key of ['fadeIn', 'fadeOut', 'crossfade', 'speed', 'pitch', 'repeat', 'gap', 'padStart', 'padEnd', 'edgeFade', 'reverse', 'mix']) if (Object.hasOwn(patch, key)) m[key] = clone(patch[key]);
       if (patch.effects) m.effects = { ...m.effects, ...patch.effects };
       return validateModel(normalizeAfterEdit(m));
-    } else if (op === 'reset') return create(args.source);
-    else fail('지원하지 않는 편집 도구입니다.');
+    } else fail('지원하지 않는 편집 도구입니다.');
     return normalizeAfterEdit(m);
   }
 
@@ -349,7 +348,9 @@
       const mix = object(raw.mix, '혼합 설정');
       m.mix = { sourceId: str(mix.sourceId, 200, '배경음 식별자'), lengthMode: enumValue(mix.lengthMode, ['voice', 'longest'], '혼합 길이') };
       for (const [key, min, max] of [['start', 0, 86400], ['end', 0.000001, 86400], ['offset', 0, 600], ['gainDb', -60, 24], ['duckThreshold', -60, -6], ['duckAmount', 0, 30], ['duckRelease', 0.05, 5], ['fadeIn', 0, 600], ['fadeOut', 0, 600], ['voiceGainDb', -60, 24], ['voiceOffset', 0, 600]]) m.mix[key] = number(mix[key], min, max, key);
-      for (const key of ['loop', 'duck', 'muted', 'solo', 'voiceMuted']) m.mix[key] = bool(mix[key], key);
+      for (const key of ['loop', 'duck']) m.mix[key] = bool(mix[key], key);
+      // The mute/solo toggles were removed; an old project that saved true must not silently mute a track.
+      for (const key of ['muted', 'solo', 'voiceMuted']) { if (mix[key] !== undefined) bool(mix[key], key); m.mix[key] = false; }
       if (mix.end <= mix.start) fail('배경음의 시작과 끝을 확인해 주세요.');
       if (known && (!known.has(mix.sourceId) || mix.end > sourceDuration(known.get(mix.sourceId)) + 0.002)) fail('프로젝트의 배경음과 선택한 원본이 일치하지 않습니다.');
     }
@@ -439,7 +440,7 @@
   function safeFilename(name, extension, used) {
     let clean = String(name || '송쌤과학_음원').normalize('NFC').replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_').replace(/[. ]+$/g, '').trim().slice(0, 180) || '음원';
     let ext = extension ? String(extension).replace(/^\./, '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase() : '';
-    if (ext) clean = clean.replace(/\.[^. ]{1,8}$/, '');
+    if (ext) clean = clean.replace(/\.(mp3|m4a|aac|m4r|ogg|oga|opus|webm|wma|mp2|ac3|wav|flac|alac|aiff|aif|caf|au|mp4|m4v|mov|mkv|avi|json|zip)$/i, '');
     if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(clean)) clean = `_${clean}`;
     const suffix = ext ? `.${ext}` : '', original = clean;
     const has = candidate => used && (typeof used.has === 'function' ? used.has(candidate) : used.includes(candidate));
@@ -451,7 +452,7 @@
   function estimateBytes(model, output, sources = []) {
     const original = sourceList(sources).find(s => s.id === model.clips.find(c => c.sourceId)?.sourceId);
     const sampleRate = Number(output.sampleRate) || original?.metadata?.sampleRate || 48000;
-    const channels = output.channels === 'mono' ? 1 : output.channels === 'stereo' ? 2 : Number(output.channels) || original?.metadata?.channels || 2;
+    const channels = Number(output.channels) || original?.metadata?.channels || 2;
     const seconds = duration(model), format = output.format || 'mp3';
     const pcm = seconds * sampleRate * (output.bitDepth || 16) * channels / 8;
     const vorbis = seconds * OGG_KBPS[clamp(Math.round(output.oggQuality ?? 4), 0, 10)] * (channels === 1 ? 0.6 : 1) * 1000 / 8 + 4096;
@@ -473,12 +474,12 @@
     const max = Math.max(0, (Number(targetMB) * 1000000 - 4096) * 8 / duration(model) / 1000);
     const choices = [64, 96, 128, 160, 192, 256, 320];
     const bitrate = choices.filter(n => n <= max).at(-1) || 64;
-    return { bitrate, possible: max >= 64, estimatedBytes: Math.ceil(duration(model) * bitrate * 125 + 4096) };
+    return { bitrate, possible: max >= 64 };
   }
   function bookmarkSegments(model) {
     const length = baseDuration(model), sorted = model.bookmarks.slice().sort((a, b) => a.time - b.time);
     if (!sorted.length || sorted[0].time > EPS) sorted.unshift({ time: 0, name: '시작' });
     return sorted.map((b, i) => ({ name: b.name, start: b.time, end: sorted[i + 1]?.time ?? length })).filter(r => r.end - r.start > EPS);
   }
-  global.StudioModel = Object.freeze({ VERSION, MAX_PROJECT_BYTES, OUTPUT_FORMATS, VIDEO_FORMATS, PCM_FORMATS, VIDEO_SIZES, CHANNEL_MODES, create, defaultModel: create, clone, effectsDefault, timeline, baseDuration, arrangementDuration, voiceDuration, duration, checkedRange, sliceClips, edit, History, detectSilence, mapTime, reverseMapTime, validateModel, validateOutput, exportProject, importProject, safeFilename, estimateBytes, suggestBitrate, bookmarkSegments });
+  global.StudioModel = Object.freeze({ VERSION, MAX_PROJECT_BYTES, OUTPUT_FORMATS, VIDEO_FORMATS, PCM_FORMATS, VIDEO_SIZES, CHANNEL_MODES, create, clone, effectsDefault, timeline, baseDuration, arrangementDuration, voiceDuration, duration, checkedRange, sliceClips, edit, History, detectSilence, mapTime, reverseMapTime, validateModel, validateOutput, exportProject, importProject, safeFilename, estimateBytes, suggestBitrate, bookmarkSegments });
 })(typeof window === 'undefined' ? globalThis : window);

@@ -1,7 +1,7 @@
 /* @ffmpeg/core 0.12.10, single threaded; all temporary media is in MEMFS. */
 'use strict';
 importScripts('./vendor/ffmpeg-core.js');
-let core, activeRequest = null, logs = [], caps = null;
+let core, logs = [], caps = null;
 const sources = new Map();
 const MAX_PCM = 256000000;
 // kind: lossy · lossless · pcm · video. A video format carries a still/animated picture next to the sound.
@@ -36,14 +36,18 @@ const AC3_KBPS = [64,96,128,160,192,224,256,320,384,448,512,576,640];
 const MAX_CHANNELS = {mp3:2,ogg:2,opus:1,webm:1,m4a:2,aac:2,m4r:2,mp4:2,webmv:2,wma:2,mp2:2,ac3:6};
 const OPUS_MONO_NOTE = '이 엔진의 스테레오 Opus 인코딩은 소리에 따라 멈추는 문제가 있어 Opus는 모노로만 저장합니다. 스테레오가 필요하면 OGG(Vorbis)나 M4A를 쓰세요.';
 const VIDEO_SIZES = {'1280x720':[1280,720],'1920x1080':[1920,1080],'1080x1080':[1080,1080],'1080x1920':[1080,1920]};
-function status(phase,message,time=null) { self.postMessage({status:{phase,message,progress:null,time}}); }
+function status(phase,message) { self.postMessage({status:{phase,message}}); }
 function fail(message,code='PROCESSING',details='') { const e = new Error(message); e.code=code;e.details=details;throw e; }
 function num(value,fallback=0,min=-Infinity,max=Infinity) { const v=Number(value); return Number.isFinite(v)?Math.max(min,Math.min(max,v)):fallback; }
 function n(value) { return Number(value.toFixed(8)).toString(); }
 const nearest=(value,list)=>list.reduce((best,v)=>Math.abs(v-value)<Math.abs(best-value)?v:best,list[0]);
 function unlink(path) { try { core.FS.unlink(path); } catch (_) {} }
+// @ffmpeg/core 0.12.10 leaves the wasm stack pointer moved after exec/ffprobe, so the 64 KB stack runs out after
+// some 60-140 jobs. asm.Da/asm.Ea are this build's stackSave/stackRestore (see vendor/ffmpeg-core.js).
+let stackGuard=null,callsWithoutGuard=0;
+function guarded(fn){if(stackGuard===null)stackGuard=typeof core.asm?.Da==='function'&&typeof core.asm?.Ea==='function';if(!stackGuard){callsWithoutGuard++;return fn();}const sp=core.asm.Da();try{return fn();}finally{core.asm.Ea(sp);}}
 function run(args,allowFailure=false) {
-  logs=[];core.reset(); const code=core.exec('-hide_banner','-loglevel','info','-nostdin',...args); const text=logs.join('\n');core.reset();
+  logs=[];core.reset(); const code=guarded(()=>core.exec('-hide_banner','-loglevel','info','-nostdin',...args)); const text=logs.join('\n');core.reset();
   if(code!==0&&!allowFailure) classify(text);
   return {code,text};
 }
@@ -55,7 +59,7 @@ function classify(text) {
 }
 function probe(path) {
   unlink('probe.json');logs=[];core.reset();
-  const code=core.ffprobe('-v','error','-show_streams','-show_format','-of','json','-o','probe.json',path);core.reset();
+  guarded(()=>core.ffprobe('-v','error','-show_streams','-show_format','-of','json','-o','probe.json',path));core.reset();
   // This pinned core leaves ffprobe's return field at -1 even on success.
   // Validate its JSON output and reported streams instead.
   let json;try{json=JSON.parse(core.FS.readFile('probe.json',{encoding:'utf8'}));}catch(_){fail('파일 정보를 읽지 못했습니다. 다른 파일로 다시 시도해 주세요.','PROBE');}finally{unlink('probe.json');}
@@ -73,22 +77,37 @@ function metadata(json,track=0) {
   const still=t=>Number(t.disposition?.attached_pic)===1||(/^(png|mjpeg|bmp|gif|webp|tiff)$/.test(t.codec_name||'')&&(Number(t.nb_frames)>0?Number(t.nb_frames)<=1:!frameRate(t.avg_frame_rate)));
   const picture=(json.streams||[]).find(t=>t.codec_type==='video'&&!still(t));
   return {duration,sampleRate:num(s.sample_rate),channels:num(s.channels),codec:s.codec_name||'확인할 수 없음',bitrate,
-    averageBitrate:!picture&&num(json.format?.bit_rate)>0?num(json.format.bit_rate)/1000:null,
-    channelLayout:s.channel_layout||'',track,streamIndex:s.index,
+    track,
     video:picture?{codec:picture.codec_name||'',width:num(picture.width),height:num(picture.height),fps:frameRate(picture.avg_frame_rate)||frameRate(picture.r_frame_rate)}:null,
-    tracks:audio.map((t,index)=>({index,streamIndex:t.index,codec:t.codec_name,language:t.tags?.language||'',title:t.tags?.title||'',channels:t.channels,sampleRate:num(t.sample_rate)})),
-    tags:{...(json.format?.tags||{}),...(s.tags||{})}};
+    tracks:audio.map(t=>({codec:t.codec_name,language:t.tags?.language||'',title:t.tags?.title||''}))};
 }
 function memoryCheck(meta) {
   if(meta.duration<=0) fail('파일의 재생 시간을 확인할 수 없습니다. 정상적인 음원 파일로 다시 저장해 주세요.','DURATION');
   if(meta.channels<1||meta.channels>8) fail('현재는 최대 8개 채널의 원본을 열 수 있습니다. 모노 또는 스테레오로 변환한 원본을 사용해 주세요.','CHANNELS');
   if(meta.duration*meta.sampleRate*meta.channels*4>MAX_PCM) fail('이 음원의 디코딩 크기가 256 MB를 넘습니다. 재생 시간을 줄이거나 샘플레이트·채널 수를 낮춘 파일을 준비해 주세요.','MEMORY');
 }
+// Browser recordings (MediaRecorder WebM/MP4) often carry no duration. Decode once, bounded by the PCM limit,
+// and keep only the measured length: the original bytes stay the worker's source, so stream copy still works.
+function measureUnknownDuration(path,track,meta) {
+  if(meta.channels<1||meta.channels>8) fail('현재는 최대 8개 채널의 원본을 열 수 있습니다. 모노 또는 스테레오로 변환한 원본을 사용해 주세요.','CHANNELS');
+  const rate=meta.sampleRate>0?meta.sampleRate:48000, channels=meta.channels||1, limit=MAX_PCM/(rate*channels*4);
+  status('decoding','녹음 길이 확인 중');
+  unlink('measure.wav');
+  try{
+    run(['-i',path,'-map',`0:a:${track}`,'-vn','-sn','-dn','-c:a','pcm_s16le','-ar',String(rate),'-ac',String(channels),'-t',n(limit+1),'-map_metadata','-1','measure.wav']);
+    const measured=metadata(probe('measure.wav'),0);
+    if(!(measured.duration>0))fail('파일의 재생 시간을 확인할 수 없습니다. 정상적인 음원 파일로 다시 저장해 주세요.','DURATION');
+    if(measured.duration>=limit)fail('이 음원의 디코딩 크기가 256 MB를 넘습니다. 재생 시간을 줄이거나 샘플레이트·채널 수를 낮춘 파일을 준비해 주세요.','MEMORY');
+    const wav=new Uint8Array(core.FS.readFile('measure.wav'));
+    return {meta:{...meta,duration:measured.duration,sampleRate:rate,channels},wav};
+  }finally{unlink('measure.wav');}
+}
+function wavSeconds(wav,rate,channels){const v=new DataView(wav.buffer,wav.byteOffset,wav.byteLength);for(let p=12;p+8<=wav.length;){const id=String.fromCharCode(wav[p],wav[p+1],wav[p+2],wav[p+3]),size=v.getUint32(p+4,true),rest=wav.length-p-8;if(id==='data')return (size&&size!==0xFFFFFFFF?Math.min(size,rest):rest)/(rate*channels*2);p+=8+size+(size&1);}return 0;}
 function readDelete(path) { const bytes=new Uint8Array(core.FS.readFile(path));unlink(path);return bytes; }
 function decode(path,track=0,meta=null) {
   const m=meta||metadata(probe(path),track);memoryCheck(m);
   unlink('decode.wav');
-  try { run(['-i',path,'-map',`0:a:${track}`,'-vn','-sn','-dn','-c:a','pcm_s16le','-ar',String(m.sampleRate),'-ac',String(m.channels),'-map_metadata','-1','decode.wav']);return readDelete('decode.wav'); }
+  try { run(['-i',path,'-map',`0:a:${track}`,'-vn','-sn','-dn','-t',n(MAX_PCM/(m.sampleRate*m.channels*4)+1),'-c:a','pcm_s16le','-ar',String(m.sampleRate),'-ac',String(m.channels),'-map_metadata','-1','decode.wav']);return readDelete('decode.wav'); }
   finally { unlink('decode.wav'); }
 }
 async function initialize() {
@@ -97,15 +116,10 @@ async function initialize() {
   try{core=await createFFmpegCore({mainScriptUrlOrBlob:new URL('vendor/ffmpeg-core.js',self.location.href).href+'#'+btoa(JSON.stringify({wasmURL:new URL('vendor/ffmpeg-core.wasm',self.location.href).href}))});}
   catch(_){core=null;fail('처리 도구(vendor/ffmpeg-core.wasm)를 불러오지 못했습니다. 폴더 안에 이 파일이 그대로 있는지 확인하고 새로고침해 주세요.','ENGINE_LOAD');}
   core.setLogger(({message})=>{logs.push(message); if(logs.length>8000)logs.shift();});
-  core.setProgress(({time})=>{if(activeRequest)status(activeRequest.phase,activeRequest.message,num(time)/1000000);});
-  const encoders=run(['-encoders'],true).text, filters=run(['-filters'],true).text, muxers=run(['-muxers'],true).text;
+  const encoders=run(['-encoders'],true).text, muxers=run(['-muxers'],true).text;
   const has=(text,name)=>new RegExp('\\s'+name+'\\s').test(text);
-  const filterNames=['atrim','asetpts','aresample','aformat','volume','concat','acrossfade','asplit','aloop','apad','adelay','afade','amix','sidechaincompress','afftdn','highpass','equalizer','acompressor','loudnorm','alimiter','asetrate','atempo','volumedetect','pan','areverse','showwaves','overlay','format'];
-  caps={version:'@ffmpeg/core 0.12.10 / FFmpeg 5.1.4',singleThread:true,maxFileBytes:120000000,maxTotalSourceBytes:200000000,maxDecodedBytes:MAX_PCM,
-    formats:Object.fromEntries(Object.entries(FORMATS).map(([k,v])=>[k,{...v,supported:has(encoders,v.encoder)&&has(muxers,v.muxer)&&(!v.videoEncoder||has(encoders,v.videoEncoder))}])),
-    filters:Object.fromEntries(filterNames.map(name=>[name,has(filters,name)])),pitchMethod:'asetrate + atempo',normalizeTargetLUFS:-16,normalizeTruePeakDB:-1.5,normalizeMaxGainDB:18,
-    videoSizes:Object.keys(VIDEO_SIZES),videoStyles:['cover','waves']};
-  for(const key of ['opus','webm']) if(caps.formats[key].supported){caps.formats[key].note=OPUS_MONO_NOTE;caps.formats[key].monoOnly=true;}
+  caps={formats:Object.fromEntries(Object.entries(FORMATS).map(([k,v])=>[k,{supported:has(encoders,v.encoder)&&has(muxers,v.muxer)&&(!v.videoEncoder||has(encoders,v.videoEncoder))}]))};
+  for(const key of ['opus','webm']) if(caps.formats[key].supported)caps.formats[key].note=OPUS_MONO_NOTE;
   status('ready','처리 도구 준비 완료');
 }
 function source(id) { const s=sources.get(id);if(!s)fail('필요한 원본 파일을 찾지 못했습니다. 원본을 다시 선택해 주세요.','MISSING_SOURCE');return s; }
@@ -121,7 +135,7 @@ function formatOptions(output,meta) {
     if(![64,96,128,160,192,256,320].includes(bitrate))fail('지원되는 MP3 비트레이트를 선택해 주세요.','SETTINGS');
     // MP3 below 32 kHz tops out at 160 kbps. With "원본 유지" a low-rate recording
     // (16/22.05 kHz) is raised to 44.1 kHz instead of failing the default settings.
-    if(rate<32000&&bitrate>160&&!output.vbr){
+    if(rate<32000&&bitrate>160){
       if(num(output.sampleRate,0))fail('32 kHz 미만의 MP3는 160 kbps 이하로 선택해 주세요. 192~320 kbps는 44.1 또는 48 kHz를 사용하세요.','SETTINGS');
       rate=44100;
     }
@@ -135,8 +149,8 @@ function formatOptions(output,meta) {
   const wanted=num(output.bitDepth,16);
   const depth=key==='wav'?([8,16,24,32].includes(wanted)?wanted:16):['aiff','caf','au','flac','alac'].includes(key)?([16,24].includes(wanted)?wanted:16):16;
   const encoder=PCM_ENCODERS[key]?PCM_ENCODERS[key][depth]:f.encoder;
-  const args=['-c:a',encoder,'-ar',String(rate),'-ac',String(channels)];
-  if(key==='mp3') args.push(...(output.vbr?['-q:a',String(num(output.quality,3,0,9))]:['-b:a',`${bitrate}k`]));
+  const args=['-c:a',encoder,'-ar',String(rate),...(channels===4?['-ch_layout','4.0']:['-ac',String(channels)])];
+  if(key==='mp3') args.push('-b:a',`${bitrate}k`);
   else if(['m4a','aac','m4r','mp4'].includes(key)){ args.push('-b:a',`${num(bitrate,192,32,320)}k`); if(key==='mp4') args.push('-aac_coder','fast'); if(key==='m4a'||key==='m4r') args.push('-movflags','+faststart'); }
   // Vorbis accepts a different bitrate range for every rate/channel pair, so use its quality scale.
   else if(key==='ogg'||key==='webmv') args.push('-q:a',String(Math.round(num(output.oggQuality,4,0,10))));
@@ -153,21 +167,27 @@ function videoOptions(output) {
   const style=output.videoStyle==='waves'?'waves':'cover';
   return {width,height,style,fps:style==='waves'?6:1};
 }
+function channelPan(src,out,mode){
+  if(src>=2&&out===1)return mode==='left'?'pan=mono|c0=c0':mode==='right'?'pan=mono|c0=c1':src===2?'pan=mono|c0=0.5*c0+0.5*c1':'';
+  if(src>=2&&out>=2)return {left:'pan=stereo|c0=c0|c1=c0',right:'pan=stereo|c0=c1|c1=c1',swap:'pan=stereo|c0=c1|c1=c0'}[mode]||'';
+  if(src===1&&out===2)return 'pan=stereo|c0=c0|c1=c0';
+  return '';
+}
 function tempoFilters(rate) {const r=[];let value=rate;while(value<0.5){r.push('atempo=0.5');value/=0.5;}while(value>2){r.push('atempo=2');value/=2;}if(Math.abs(value-1)>1e-7)r.push(`atempo=${n(value)}`);return r;}
 function buildGraph(model,format) {
   if(!Array.isArray(model.clips)||!model.clips.length||model.clips.length>200)fail('음원이 0초가 되는 편집은 저장할 수 없습니다. 원본이나 구간을 추가해 주세요.','RANGE');
-  const rate=format.rate,channels=format.channels,layout=channels===1?'mono':channels===2?'stereo':{3:'2.1',4:'quad',5:'5.0',6:'5.1',7:'6.1',8:'7.1'}[channels];
+  const rate=format.rate,channels=format.channels,layout=channels===1?'mono':channels===2?'stereo':{3:'2.1',4:'4.0',5:'5.0',6:'5.1',7:'6.1',8:'7.1'}[channels];
   const args=[],graph=[],inputs=new Map();
   function input(id){if(!inputs.has(id)){inputs.set(id,inputs.size);args.push('-i',source(id).path);}return inputs.get(id);}
   const clips=model.clips.map(c=>{const s=c.sourceId?source(c.sourceId):null;const start=num(c.start),end=num(c.end,s?.metadata.duration||0);if(start<0||end<=start||(s&&end>s.metadata.duration+0.05))fail('선택 구간이 원본 범위를 벗어났습니다. 시작·끝 시간을 확인해 주세요.','RANGE');return {...c,start,end,duration:end-start,s};});
   // Channel choice happens before any downmix so "왼쪽만" really is the left microphone channel.
-  const channelMode=model.effects?.channelMode,pan={left:'pan=stereo|c0=c0|c1=c0',right:'pan=stereo|c0=c1|c1=c1',swap:'pan=stereo|c0=c1|c1=c0'}[channelMode];
+  const channelMode=model.effects?.channelMode;
   let duration=0,current='';
   clips.forEach((c,i)=>{
     const idx=c.sourceId?input(c.sourceId):null,label=`clip${i}`;
     const filters=[`atrim=start=${n(c.start)}:end=${n(c.end)}`,'asetpts=PTS-STARTPTS'];
-    if(pan&&c.s&&c.s.metadata.channels>=2)filters.push(pan);
-    filters.push(`aresample=${rate}`,`aformat=sample_fmts=fltp:channel_layouts=${layout}`,`volume=${c.muted?0:n(num(c.gain,1,0,8))}`);
+    const cp=c.s?channelPan(c.s.metadata.channels,channels,channelMode):'';if(cp)filters.push(cp);else if(channels===4&&c.s?.metadata.channels===4)filters.push('channelmap=channel_layout=4.0');
+    filters.push(`aresample=${rate}:rematrix_maxval=1`,`aformat=sample_fmts=fltp:channel_layouts=${layout}`,`volume=${c.muted?0:n(num(c.gain,1,0,8))}`);
     if(model.edgeFade) {const edge=Math.min(.005,c.duration/2);filters.push(`afade=t=in:d=${n(edge)}`,`afade=t=out:st=${n(c.duration-edge)}:d=${n(edge)}`);}
     if(c.s)graph.push(`[${idx}:a:${c.s.track}]${filters.join(',')}[${label}]`);
     else graph.push(`anullsrc=r=${rate}:cl=${layout},atrim=duration=${n(c.duration)},asetpts=PTS-STARTPTS[${label}]`);
@@ -184,12 +204,12 @@ function buildGraph(model,format) {
   transform.push(...tempoFilters(speed/factor));duration/=speed;
   // Reversal sits before the pads and fades, so a fade-in still fades the start of the saved file.
   if(model.reverse===true)transform.push('areverse');
+  const body=duration,fadeIn=Math.min(num(model.fadeIn,0,0,600),body),fadeOut=Math.min(num(model.fadeOut,0,0,600),body);
+  if(fadeIn)transform.push(`afade=t=in:d=${n(fadeIn)}`);if(fadeOut)transform.push(`afade=t=out:st=${n(Math.max(0,body-fadeOut))}:d=${n(fadeOut)}`);
   const padStart=num(model.padStart,0,0,600),padEnd=num(model.padEnd,0,0,600);
   if(padStart)transform.push(`adelay=${Math.round(padStart*rate)}S:all=1`);
   if(padEnd)transform.push(`apad=pad_dur=${n(padEnd)}`);
   duration+=padStart+padEnd;
-  const fadeIn=Math.min(num(model.fadeIn,0,0,600),duration),fadeOut=Math.min(num(model.fadeOut,0,0,600),duration);
-  if(fadeIn)transform.push(`afade=t=in:d=${n(fadeIn)}`);if(fadeOut)transform.push(`afade=t=out:st=${n(duration-fadeOut)}:d=${n(fadeOut)}`);
   if(transform.length){graph.push(`[${current}]${transform.join(',')}[main]`);current='main';}
   const mix=model.mix;
   if(mix?.sourceId){
@@ -198,12 +218,15 @@ function buildGraph(model,format) {
     const bgLength=end-start,bgOffset=num(mix.offset,0,0,600),voiceOffset=num(mix.voiceOffset,0,0,600),voiceLength=duration+voiceOffset;
     const loopLength=Math.max(bgLength,voiceLength-bgOffset);
     duration=mix.lengthMode==='longest'?Math.max(voiceLength,bgOffset+(mix.loop?loopLength:bgLength)):voiceLength;
-    const voiceMuted=mix.voiceMuted||mix.solo===true||mix.solo==='background',bgMuted=mix.muted||mix.solo==='voice';
+    const voiceMuted=false,bgMuted=false; // the mute/solo toggles were removed from the UI
     const voiceFilters=[`volume=${voiceMuted?0:n(10**(num(mix.voiceGainDb,0,-60,24)/20))}`];if(voiceOffset)voiceFilters.push(`adelay=${Math.round(voiceOffset*rate)}S:all=1`);voiceFilters.push(`apad=whole_dur=${n(duration)}`,`atrim=duration=${n(duration)}`);
     graph.push(`[${current}]${voiceFilters.join(',')}[voice]`);
-    const b=[`atrim=start=${n(start)}:end=${n(end)}`,'asetpts=PTS-STARTPTS',`aresample=${rate}`,`aformat=sample_fmts=fltp:channel_layouts=${layout}`];
-    const actualBg=mix.loop?Math.max(.001,duration-bgOffset):bgLength;
-    if(mix.loop)b.push(`aloop=loop=-1:size=${Math.max(1,Math.round(bgLength*rate))}`,`atrim=duration=${n(actualBg)}`);
+    const bp=channelPan(s.metadata.channels,channels,'keep');
+    const b=[`atrim=start=${n(start)}:end=${n(end)}`,'asetpts=PTS-STARTPTS',...(bp?[bp]:channels===4&&s.metadata.channels===4?['channelmap=channel_layout=4.0']:[]),`aresample=${rate}:rematrix_maxval=1`,`aformat=sample_fmts=fltp:channel_layouts=${layout}`];
+    // [29] without looping, the music ends with the mix, so its fade-out must end there too
+    const actualBg=Math.max(.001,mix.loop?duration-bgOffset:Math.min(bgLength,duration-bgOffset));
+    if(mix.loop)b.push(`aloop=loop=-1:size=${Math.max(1,Math.round(bgLength*rate))}`);
+    b.push(`atrim=duration=${n(actualBg)}`);
     b.push(`volume=${bgMuted?0:n(10**(num(mix.gainDb,-16,-60,24)/20))}`);
     const bi=Math.min(num(mix.fadeIn,0,0,600),actualBg),bo=Math.min(num(mix.fadeOut,0,0,600),actualBg);
     if(bi)b.push(`afade=t=in:d=${n(bi)}`);if(bo)b.push(`afade=t=out:st=${n(Math.max(0,actualBg-bo))}:d=${n(bo)}`);
@@ -218,7 +241,7 @@ function buildGraph(model,format) {
   }
   const e=model.effects||{},effects=[];
   if(e.noise&&e.noise!=='off'){const nr={light:6,medium:12,strong:20}[e.noise];if(!nr)fail('잡음 감소 설정을 확인해 주세요.','SETTINGS');effects.push(`afftdn=nr=${nr}:nf=-35:tn=1`);}
-  if(e.highpass)effects.push(`highpass=f=${typeof e.highpass==='number'?num(e.highpass,80,30,300):80}`);
+  if(e.highpass)effects.push('highpass=f=80');
   for(const [value,freq,width] of [[e.clarity,2500,1],[e.eqLow,120,1],[e.eqMid,1000,1],[e.eqHigh,6000,1]])if(num(value))effects.push(`equalizer=f=${freq}:t=o:w=${width}:g=${n(num(value,0,-12,12))}`);
   if(num(e.gainDb))effects.push(`volume=${n(num(e.gainDb,0,-60,24))}dB`);
   if(e.compressor)effects.push('acompressor=threshold=0.125:ratio=3:attack=20:release=250:makeup=1');
@@ -245,7 +268,8 @@ function normalizeFilters(path,enabled,limiter) {
   return {filters,notes};
 }
 function tagArgs(output,metaIndex) {
-  const args=['-map_metadata',String(metaIndex)];
+  const args=['-map_metadata',String(metaIndex),'-map_chapters','-1'];
+  if(metaIndex>=0)args.push('-metadata','TLEN=');
   if(output.metadataMode==='edit')for(const key of ['title','artist','album'])args.push('-metadata',`${key}=${String(output[key]||'').slice(0,300)}`);
   return args;
 }
@@ -253,7 +277,7 @@ async function render(model,output,options) {
   const firstId=model.clips?.find(c=>c.sourceId)?.sourceId;
   const first=firstId?source(firstId):{path:null,metadata:{sampleRate:48000,channels:2}};const actualOutput=options.preview?{...output,format:'wav',bitDepth:16,channels:Math.min(num(output.channels,0)||first.metadata.channels,MAX_CHANNELS[output.format||'mp3']||8)}:output;
   const f=formatOptions(actualOutput,first.metadata), built=buildGraph(model,f);
-  activeRequest={phase:'processing',message:options.preview?'편집 결과 만드는 중':'편집·보정 중'};status(activeRequest.phase,activeRequest.message);
+  status('processing',options.preview?'편집 결과 만드는 중':'편집·보정 중');
   const temp='render_float.wav',final=`result.${f.extension}`;unlink(temp);unlink(final);unlink('cover.png');
   try{
     run([...built.args,'-filter_complex',built.graph,'-map','[processed]','-vn','-sn','-dn','-c:a','pcm_f32le','-ar',String(f.rate),'-ac',String(f.channels),'-map_metadata','-1','-threads','1',temp]);
@@ -262,7 +286,7 @@ async function render(model,output,options) {
     if(f.kind==='video'){
       if(!(options.cover instanceof Uint8Array)||options.cover.length<100)fail('영상 배경 그림이 준비되지 않았습니다. 영상 설정을 확인하고 다시 변환해 주세요.','SETTINGS');
       video=videoOptions(output);
-      activeRequest={phase:'encoding',message:video.style==='waves'?'파형 영상 만드는 중 · 시간이 걸려요':'영상으로 만드는 중'};status(activeRequest.phase,activeRequest.message);
+      status('encoding',video.style==='waves'?'파형 영상 만드는 중 · 시간이 걸려요':'영상으로 만드는 중');
       core.FS.writeFile('cover.png',options.cover);
       const args=['-loop','1','-framerate',String(video.fps),'-i','cover.png','-i',temp];let metaIndex=-1;
       if(output.metadataMode==='keep'&&first.path){metaIndex=2;args.push('-i',first.path);}
@@ -281,21 +305,21 @@ async function render(model,output,options) {
       args.push('-f',f.muxer,'-threads','1',final);run(args);
       notes.push(`${video.width}×${video.height} · ${video.style==='waves'?'파형 애니메이션 6 fps':'정지 화면 1 fps'} · ${f.videoCodec==='h264'?'H.264 + AAC':'VP8 + Vorbis'}`);
     } else {
-      activeRequest={phase:'encoding',message:options.preview?'편집본 준비 중':'선택한 형식으로 변환 중'};status(activeRequest.phase,activeRequest.message);
+      status('encoding',options.preview?'편집본 준비 중':'선택한 형식으로 변환 중');
       const args=['-i',temp];let metaIndex=-1;
       if(output.metadataMode==='keep'&&first.path){metaIndex=1;args.push('-i',first.path);}
       args.push('-map','0:a:0','-vn','-sn','-dn');if(filters.length)args.push('-af',filters.join(','));
       args.push(...f.args,...tagArgs(output,metaIndex));
       args.push('-f',f.muxer,'-threads','1',final);run(args);
     }
-    status('verifying','실제 출력 정보 확인 중');const meta=metadata(probe(final));const bytes=readDelete(final);
+    status('verifying','실제 출력 정보 확인 중');const meta=metadata(probe(final));if(f.muxer==='adts'){meta.duration=built.duration;meta.bitrate=null;}const bytes=readDelete(final);
     if(bytes.length<64||meta.duration<=0)fail('빈 결과가 생성되었습니다. 원본과 선택 구간을 확인해 주세요.','EMPTY_OUTPUT');
     if(first.metadata.channels!==f.channels)notes.push(`출력 채널을 ${first.metadata.channels}개에서 ${f.channels}개로 변환했습니다.`);
     if((Number(output.sampleRate)||first.metadata.sampleRate)!==f.rate)notes.push(`출력 코덱의 지원 범위에 맞춰 ${f.rate} Hz로 변환했습니다.`);
     if((f.key==='opus'||f.key==='webm')&&first.metadata.channels>1&&!options.preview)notes.push('Opus는 이 엔진에서 모노로만 안정적으로 저장돼 모노로 저장했습니다.');
     if(f.key==='m4r'&&meta.duration>40)notes.push('아이폰 벨소리는 40초 이내여야 합니다. 구간을 줄여 다시 변환해 보세요.');
-    return {bytes,mime:f.mime,extension:f.extension,metadata:meta,summary:{duration:meta.duration,plannedDuration:built.duration,clips:model.clips.length,speed:num(model.speed,1),pitch:num(model.pitch),repeat:num(model.repeat,1),mix:!!model.mix,reverse:model.reverse===true,notes,format:f.key,kind:f.kind,video:video?{...video,codec:f.videoCodec}:null,preview:!!options.preview}};
-  }finally{activeRequest=null;unlink(temp);unlink(final);unlink('cover.png');}
+    return {bytes,mime:f.mime,extension:f.extension,metadata:meta,summary:{notes,format:f.key,kind:f.kind}};
+  }finally{unlink(temp);unlink(final);unlink('cover.png');}
 }
 function copyExtract(data){
   const s=source(data.sourceId),codec=s.metadata.codec;const map={aac:'m4a',mp3:'mp3',flac:'flac',vorbis:'ogg',opus:'opus',alac:'alac',ac3:'ac3',mp2:'mp2',wmav2:'wma',pcm_s16le:'wav',pcm_s24le:'wav',pcm_f32le:'wav',pcm_u8:'wav',pcm_s16be:'aiff',pcm_s24be:'aiff'};
@@ -314,7 +338,12 @@ self.onmessage=async({data})=>{
     else if(data.type==='analyze'){
       const path=data.id+'.media';status('analyzing','파일의 오디오 트랙 분석 중');
       core.FS.writeFile(path,data.bytes);
-      try{const meta=metadata(probe(path),data.track);memoryCheck(meta);status('decoding','파형에 사용할 실제 소리 읽는 중');const wav=decode(path,data.track,meta);sources.set(data.id,{path,metadata:meta,track:data.track});result={id:data.id,metadata:meta,wav};}catch(e){unlink(path);throw e;}
+      try{
+        let meta=metadata(probe(path),data.track),wav,track=data.track;
+        if(!(meta.duration>0)){const measured=measureUnknownDuration(path,data.track,meta);meta=measured.meta;wav=measured.wav;}
+        else{memoryCheck(meta);status('decoding','파형에 사용할 실제 소리 읽는 중');wav=decode(path,data.track,meta);const real=wavSeconds(wav,meta.sampleRate,meta.channels);if(real>0&&Math.abs(real-meta.duration)>0.02)meta={...meta,duration:real};}
+        sources.set(data.id,{path,metadata:meta,track});result={id:data.id,metadata:meta,wav};
+      }catch(e){unlink(path);throw e;}
     }
     else if(data.type==='render')result=await render(data.model,data.output,data.options||{});
     else if(data.type==='decode'){const path='verify.media';core.FS.writeFile(path,data.bytes);try{result={wav:decode(path)};}finally{unlink(path);}}
@@ -322,6 +351,6 @@ self.onmessage=async({data})=>{
     else if(data.type==='remove'){const s=sources.get(data.id);if(s)unlink(s.path);sources.delete(data.id);result=true;}
     else fail('알 수 없는 처리 요청입니다.','REQUEST');
     const transfer=[];if(result?.bytes)transfer.push(result.bytes.buffer);if(result?.wav)transfer.push(result.wav.buffer);
-    self.postMessage({requestId,result},transfer);
-  }catch(error){activeRequest=null;const fatal=/out of memory|memory access out of bounds|Cannot enlarge memory|allocation failed/i.test(error.message);self.postMessage({requestId,error:{message:fatal?'처리 도구의 메모리 오류가 발생했습니다. 짧은 구간이나 다른 형식으로 다시 시도해 주세요. 원본과 편집 설정은 유지됩니다.':error.message||'처리 중 오류가 발생했습니다.',code:fatal?'MEMORY':error.code||'ENGINE',fatal,details:error.details||''}});}
+    self.postMessage({requestId,result,recycle:stackGuard===false&&callsWithoutGuard>40},transfer);
+  }catch(error){const fatal=/out of memory|memory access out of bounds|Cannot enlarge memory|allocation failed/i.test(error.message);self.postMessage({requestId,error:{message:fatal?'처리 도구의 메모리 오류가 발생했습니다. 짧은 구간이나 다른 형식으로 다시 시도해 주세요. 원본과 편집 설정은 유지됩니다.':error.message||'처리 중 오류가 발생했습니다.',code:fatal?'MEMORY':error.code||'ENGINE',fatal,details:error.details||''}});}
 };

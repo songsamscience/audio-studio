@@ -12,7 +12,7 @@
       if (this.worker) return;
       if (location.protocol === 'file:') throw new Error('HTML 더블클릭으로는 처리 도구를 불러올 수 없습니다. 포함된 실행 서버를 이용해 HTTP 주소로 열어 주세요.');
       const generation = this.generation;
-      this._status({phase:'loading', message:'처리 도구 준비 중', progress:null});
+      this._status({phase:'loading', message:'처리 도구 준비 중'});
       const worker = new Worker(new URL('engine-worker.js', BASE)); this.worker = worker;
       worker.onmessage = ({data}) => {
         if (worker !== this.worker) return;
@@ -20,7 +20,7 @@
         const pending = this.pending.get(data.requestId); if (!pending) return;
         this.pending.delete(data.requestId);
         if (data.error) { if(data.error.fatal){worker.terminate();this.worker=null;} const e = new Error(data.error.message); e.code = data.error.code; e.details = data.error.details; pending.reject(e); }
-        else pending.resolve(data.result);
+        else { pending.resolve(data.result); if (data.recycle) { worker.terminate(); this.worker = null; } } // fresh core; sources are restored on the next job
       };
       worker.onerror = () => { if (worker !== this.worker) return; const e = new Error('처리 도구를 불러오지 못했습니다. 사이트의 Worker와 WASM 파일을 확인하거나 새로고침해 주세요.'); for (const p of this.pending.values()) p.reject(e); this.pending.clear(); worker.terminate(); this.worker = null; };
       try {
@@ -50,7 +50,7 @@
         if (file.size > 120000000) throw new Error('한 파일은 120 MB까지 열 수 있습니다. 긴 영상은 먼저 짧게 나누거나 작은 파일로 준비해 주세요.');
         // When the new file replaces the current work, the old sources are released right after it opens.
         const total = options.replacing ? 0 : [...this.sources.values()].reduce((n,s) => n+s.file.size, 0);
-        if (total + file.size > 200000000) throw new Error('현재 작업의 원본 총용량이 200 MB를 넘습니다. 새 작업에서 처리하거나 사용하지 않는 파일을 제거해 주세요.');
+        if (total + file.size > 200000000) throw new Error('현재 작업의 원본 총용량(되돌리기용 원본 포함)이 200 MB를 넘습니다. 더 작은 파일을 쓰거나 「작업 데이터 지우기」 뒤 새 작업으로 시작해 주세요.');
         const id = `source_${Date.now().toString(36)}_${++this.sequence}`;
         const bytes = new Uint8Array(await file.arrayBuffer());
         if (generation !== this.generation) throw this._cancelError();
@@ -69,7 +69,7 @@
       ++this.generation;
       if (this.worker) this.worker.terminate(); this.worker = null;
       const e = this._cancelError(); for (const p of this.pending.values()) p.reject(e); this.pending.clear(); this.serial = Promise.resolve();
-      this._status({phase:'cancelled',message:e.message,progress:null});
+      this._status({phase:'cancelled',message:e.message});
     }
     dispose() { this.cancel(); this.sources.clear(); }
   }

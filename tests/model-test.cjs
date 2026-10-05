@@ -299,4 +299,44 @@ test('a real MJPEG/PNG video counts as video, a cover picture does not', () => {
   assert.equal(meta({ codec_type: 'video', codec_name: 'h264', width: 1280, height: 720, avg_frame_rate: '30000/1001', disposition: { attached_pic: 0 } }).fps, 29.97);
   assert.equal(meta(null), null, 'audio only');
 });
+test('file names keep dots that are not a media extension', () => {
+  assert.equal(M.safeFilename('실험 v1.2 정리', 'mp3'), '실험 v1.2 정리.mp3');
+  assert.equal(M.safeFilename('lecture.part1_변환', 'wav'), 'lecture.part1_변환.wav');
+  assert.equal(M.safeFilename('수업 녹음.webm', 'mp3'), '수업 녹음.mp3');
+  assert.equal(M.safeFilename('1.5배속', 'm4a'), '1.5배속.m4a');
+});
+test('trailing silence removal snaps to the end and leaves no sliver; old mute/solo flags are ignored', () => {
+  const m = M.create(source);
+  const cut = M.edit(m, 'removeRanges', { ranges: [{ start: 2, end: 3 }, { start: 9.2, end: 10.0004 }] });
+  assert.ok(Math.abs(M.duration(cut) - 8.2) < 1e-9, 'length ' + M.duration(cut));
+  assert.ok(cut.clips.every(c => c.end - c.start > 0.001), 'no 0-second clip');
+  const near = M.edit(m, 'removeRanges', { ranges: [{ start: 9, end: 9.9995 }] });
+  assert.ok(near.clips.every(c => c.end - c.start > 0.001) && Math.abs(M.duration(near) - 9) < 1e-9, 'near-end range snaps');
+  const mixed = M.create(source);
+  mixed.mix = { sourceId: 'two', start: 0, end: 7, offset: 0, gainDb: -12, loop: true, duck: false, duckThreshold: -30, duckAmount: 12, duckRelease: .4, fadeIn: 0, fadeOut: 0, muted: true, solo: true, voiceMuted: true, voiceGainDb: 0, voiceOffset: 0, lengthMode: 'voice' };
+  const v = M.validateModel(mixed, [source, second]);
+  assert.deepEqual([v.mix.muted, v.mix.solo, v.mix.voiceMuted], [false, false, false]);
+});
+test('engine graph: fixed-gain channel conversion, fades before pads, background fade inside the mix', () => {
+  const context = vm.createContext({ importScripts() {}, self: { postMessage() {} }, Map, Set, console });
+  vm.runInContext(fs.readFileSync(require.resolve('../engine-worker.js'), 'utf8'), context);
+  context.testSources = [source, second];
+  vm.runInContext('for (const s of testSources) sources.set(s.id, { path:s.id+".wav", metadata:s.metadata, track:0 });', context);
+  context.testModel = M.create(source);
+  const mono = vm.runInContext('buildGraph(testModel,{rate:48000,channels:1}).graph', context);
+  assert.ok(mono.includes('pan=mono|c0=0.5*c0+0.5*c1'), 'stereo to mono averages instead of summing');
+  context.testModel = M.create(second);
+  assert.ok(vm.runInContext('buildGraph(testModel,{rate:48000,channels:2}).graph', context).includes('pan=stereo|c0=c0|c1=c0'), 'mono to stereo copies at the same level');
+  const padded = M.edit(M.create(source), 'settings', { padStart: 2, padEnd: 1, fadeIn: 1, fadeOut: 1 });
+  context.testModel = padded;
+  const g = vm.runInContext('buildGraph(testModel,{rate:48000,channels:2})', context);
+  assert.ok(g.graph.indexOf('afade=t=in') < g.graph.indexOf('adelay='), 'fade-in comes before the leading silence');
+  assert.ok(g.graph.includes('afade=t=out:st=9:d=1'), 'fade-out ends where the sound ends, before the trailing silence');
+  assert.ok(Math.abs(g.duration - 13) < 1e-9);
+  const mixed = M.create(source);
+  mixed.mix = { sourceId: 'two', start: 0, end: 7, offset: 6, gainDb: -12, loop: false, duck: false, duckThreshold: -30, duckAmount: 12, duckRelease: .4, fadeIn: 0, fadeOut: 2, muted: false, solo: false, voiceMuted: false, voiceGainDb: 0, voiceOffset: 0, lengthMode: 'voice' };
+  context.testModel = mixed;
+  const bg = vm.runInContext('buildGraph(testModel,{rate:48000,channels:2}).graph', context);
+  assert.ok(bg.includes('afade=t=out:st=2:d=2'), 'music cut at 4 s by the voice fades out over its last 2 s');
+});
 console.log(`\n${count} model tests passed.`);

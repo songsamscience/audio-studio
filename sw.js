@@ -1,10 +1,10 @@
 /* Register only after the user explicitly chooses offline preparation.
  * Bump VERSION whenever any app/engine asset changes. No media is cached. */
-const VERSION = 'songsam-audio-static-v1.2.1';
+const VERSION = 'songsam-audio-static-v1.2.2';
 const PREFIX = 'songsam-audio-static-';
 const FILES = [
   'index.html', 'style.css', 'theme.js', 'app.js', 'model.js', 'engine.js',
-  'engine-worker.js', 'engine-capabilities.json',
+  'engine-worker.js',
   'vendor/ffmpeg-core.js', 'vendor/ffmpeg-core.wasm',
   'vendor/PretendardVariable.woff2',
 ];
@@ -59,13 +59,6 @@ self.addEventListener('message', event => {
       const count = present.filter(Boolean).length;
       port.postMessage({ type: 'CACHE_STATUS', ready: count === URLS.length, count,
         total: URLS.length, version: VERSION });
-    })());
-  } else if (event.data.type === 'CLEAR_STATIC_CACHE') {
-    event.waitUntil((async () => {
-      for (const name of await caches.keys()) {
-        if (name.startsWith(PREFIX)) await caches.delete(name);
-      }
-      port.postMessage({ type: 'CLEAR_STATIC_CACHE', cleared: true });
     })());
   }
 });
