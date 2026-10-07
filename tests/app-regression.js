@@ -6,6 +6,9 @@
   const $ = id => document.getElementById(id);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const idle = async (ms = 60000) => { const t0 = Date.now(); await sleep(150); while (Date.now() - t0 < ms) { if ($('busy').hidden) return true; await sleep(150); } return false; };
+  // Record what would be saved (file names) without really writing to the Downloads folder.
+  const saves = []; const origClick = HTMLAnchorElement.prototype.click; HTMLAnchorElement.prototype.click = function () { if (this.download) { saves.push(this.download); return; } return origClick.call(this); };
+  const warns = () => { const e = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; };
   const blobs = []; const origURL = URL.createObjectURL.bind(URL); URL.createObjectURL = b => { if (b instanceof Blob) blobs.push(b); return origURL(b); };
   const fixture = async (name, type) => new File([await (await fetch('tests/fixtures/' + encodeURIComponent(name), { cache: 'no-store' })).blob()], name, { type });
   const drop = async files => { const dt = new DataTransfer(); for (const f of files) dt.items.add(f); document.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true })); await sleep(250); await idle(); await sleep(150); };
@@ -15,7 +18,7 @@
   const setSel = async (a, b) => { $('selectionStart').value = a; $('selectionStart').dispatchEvent(new Event('change', { bubbles: true })); $('selectionEnd').value = b; $('selectionEnd').dispatchEvent(new Event('change', { bubbles: true })); await sleep(150); };
   const setField = async (key, value, scope) => { const el = document.querySelector(`[data-key="${key}"]${scope ? `[data-scope="${scope}"]` : ''}`); if (!el) throw new Error('없는 입력칸: ' + key); if (el.type === 'checkbox') el.checked = value; else el.value = value; el.dispatchEvent(new Event('change', { bubbles: true })); await sleep(200); };
   const toastText = () => $('toast').hidden ? '' : $('toast').textContent;
-  const convert = async () => { const rc = $('resultCard'), was = rc.textContent; document.querySelector('#panelBody [data-action="export"]').click(); await sleep(300); await idle(180000); await sleep(200); if (rc.hidden || rc.textContent === was || !rc.textContent.includes('변환이 완료')) throw new Error('변환 실패: ' + toastText()); };
+  const convert = async () => { const rc = $('resultCard'), was = rc.textContent; document.querySelector('#panelBody [data-action="export"]').click(); await sleep(300); await idle(180000); await sleep(200); if (rc.hidden || rc.textContent === was || !rc.textContent.includes('저장했어요')) throw new Error('변환 실패: ' + toastText()); };
   const download = async () => { const n = blobs.length; await act('download'); await sleep(150); return blobs.slice(n).find(b => !b.type.startsWith('application/json')); };
   let ctx; const buf = async blob => { ctx = ctx || new AudioContext(); return ctx.decodeAudioData(await blob.arrayBuffer()); };
   const hz = (b, ch, from, to) => { const d = b.getChannelData(ch), s = Math.floor(from * b.sampleRate), e = Math.floor(to * b.sampleRate); let c = 0; for (let i = s + 1; i < e; i++) if (d[i - 1] <= 0 && d[i] > 0) c++; return Math.round(c / (to - from)); };
@@ -37,6 +40,7 @@
       await tool('record'); await act('recordStart'); await sleep(2600);
       await act('recordStop'); await sleep(400); await idle(); await sleep(300);
       ok(!$('workbench').hidden && $('sourceName').textContent.includes('녹음'), '편집 화면이 아님: ' + toastText());
+      ok(warns(), '저장 안 한 녹음인데 창 닫기 경고 없음'); await click('#headerExport'); ok(!warns(), '저장했는데도 경고');
       return $('sourceMeta').textContent;
     });
     await test('R02 녹음 시작 두 번 눌러도 녹음기는 하나', async () => {
@@ -86,7 +90,7 @@
       const btn = document.querySelector('#panelBody [data-action="export"]'), was = $('resultCard').textContent;
       btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true })); input.blur();
       btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); ok(btn.isConnected, '누르는 중에 단추가 다시 그려짐'); btn.click(); await sleep(300); await idle(); await sleep(300);
-      ok($('resultCard').textContent !== was && $('resultCard').textContent.includes('변환이 완료'), '첫 클릭이 사라짐');
+      ok($('resultCard').textContent !== was && $('resultCard').textContent.includes('저장했어요'), '첫 클릭이 사라짐');
     });
     await test('R10 설정을 바꿔도 키보드 포커스 유지', async () => {
       const s = document.querySelector('[data-key="videoSize"]'); s.focus(); s.value = '1080x1080'; s.dispatchEvent(new Event('change', { bubbles: true })); await sleep(300);
@@ -103,10 +107,11 @@
       const focused = document.activeElement === $('cancelBtn'), inert = document.querySelector('.app-body').inert; await idle(); await sleep(200);
       ok(focused && inert, `포커스 ${focused} 잠김 ${inert}`); ok(!document.querySelector('.app-body').inert, '끝난 뒤에도 잠김');
     });
-    await test('R13 내려받지 않은 결과가 있으면 창 닫기 경고', async () => {
-      const e = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(e); const warnedBefore = e.defaultPrevented;
-      await download(); const e2 = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(e2);
-      ok(warnedBefore, '경고 없음'); return { afterDownloadStillWarns: e2.defaultPrevented };
+    await test('R13 변환하면 바로 저장돼 창 닫기 경고 없음 · 설정을 바꾸면 다시 경고', async () => {
+      const fire = () => { const e = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; };
+      ok(!fire(), '변환과 함께 저장했는데 경고'); const again = await download(); ok(again && again.size > 100, '「다시 저장」 안 됨');
+      await setField('bitDepth', 24, 'output'); const warned = fire(); await setField('bitDepth', 16, 'output');
+      ok(warned, '설정을 바꿨는데 경고 없음'); ok(document.querySelector('#resultCard [data-action="export"]'), '바뀐 결과 카드에 「변환하고 저장」 없음');
     });
     await test('R14 일괄 변환은 작업 취소로 멈춤', async () => {
       await tool('batch'); const files = [await fixture('수업 소리 & 테스트.wav', 'audio/wav'), await fixture('tone.mp3', 'audio/mpeg'), await fixture('silence-gaps.wav', 'audio/wav')];
@@ -138,6 +143,85 @@
       const eng = new AudioEngine(), f = await fixture('tone-mono-22050.wav', 'audio/wav'), a = await eng.analyze(f), m = window.StudioModel.edit(window.StudioModel.create(a), 'trim', { start: 0, end: .3 });
       const t0 = performance.now(); let done = 0; for (let i = 0; i < 150; i++) { const r = await eng.render(m, { format: i % 2 ? 'mp3' : 'wav', bitrate: 128 }); if (r.size > 64) done++; }
       eng.dispose(); ok(done === 150, '성공 ' + done); return { done, seconds: Math.round((performance.now() - t0) / 1000) };
+    });
+    await test('R19 녹음 마치고 바로 저장 → 한 번에 파일', async () => {
+      await tool('record'); await act('recordStart'); await sleep(1600);
+      ok(document.querySelector('[data-action="recordStopSave"]')?.textContent.includes('바로 저장'), '「녹음 마치고 바로 저장」 단추 없음');
+      const s0 = saves.length; await act('recordStopSave'); await sleep(600); await idle(); await sleep(400);
+      const got = saves.slice(s0); ok(got.length === 1, '저장 수 ' + got.length + ' ' + got.join(','));
+      ok(/^수업_녹음_\d{4}-\d{2}-\d{2}_\d{4}\.\w+$/.test(got[0]), '파일 이름 ' + got[0]);
+      ok($('resultCard').textContent.includes('저장했어요') && !$('workbench').hidden, '결과 카드 없음'); ok(document.querySelector('.menu-summary [data-action="export"]'), '녹음 뒤 「이대로 저장」 요약 없음');
+      return got[0];
+    });
+    await test('R20 헤더 변환하고 저장 · 이대로 저장 · 다시 저장 · MP3로도 저장은 각각 한 번', async () => {
+      await drop([await fixture('tone.mp3', 'audio/mpeg')]); ok($('headerExport').textContent.includes('변환하고 저장'), '헤더 단추 이름');
+      let s0 = saves.length; await click('#headerExport'); ok(saves.length === s0 + 1, '헤더 단추 한 번에 저장 안 됨');
+      if (!document.querySelector('[data-menu="m-96"]')) await click('[data-action="toggleMenu"]'); await click('[data-menu="m-96"]');
+      const sum = document.querySelector('.menu-summary [data-action="export"]'); ok(sum && sum.textContent.includes('이대로 저장'), '요약 단추 이름');
+      s0 = saves.length; await click(sum); ok(saves.length === s0 + 1 && /\.mp3$/.test(saves.at(-1)), '이대로 저장 ' + saves.slice(s0));
+      s0 = saves.length; await act('download'); ok(saves.length === s0 + 1, '다시 저장');
+      await click('[data-action="toggleMenu"]'); await click('[data-menu="v-still"]'); s0 = saves.length; await click('#panelBody [data-action="export"]');
+      ok(saves.length === s0 + 1 && /\.mp4$/.test(saves.at(-1)), '영상 저장 ' + saves.slice(s0));
+      s0 = saves.length; await act('toMp3'); ok(saves.length === s0 + 1 && /\.mp3$/.test(saves.at(-1)), 'MP3로도 저장 ' + saves.slice(s0));
+      return saves.slice(-4);
+    });
+    await test('R21 바로 저장할 녹음을 열지 못하면 녹음 원본을 그대로 저장', async () => {
+      const orig = AudioEngine.prototype.analyze; AudioEngine.prototype.analyze = function () { AudioEngine.prototype.analyze = orig; return Promise.reject(new Error('시험용 실패')); };
+      await tool('record'); await act('recordStart'); await sleep(1200); const s0 = saves.length; await act('recordStopSave'); await sleep(500); await idle(); await sleep(300);
+      ok(saves.slice(s0).some(n => /\.(webm|ogg|m4a)$/.test(n)), '원본 녹음 저장 안 됨 ' + saves.slice(s0)); ok(document.querySelector('[data-action="recordSave"]')?.textContent.includes('다시 저장'), '「녹음 파일 다시 저장」 없음'); ok(!warns(), '저장했는데 경고');
+    });
+    await test('R22 저장하지 않은 녹음 → 「이전 녹음 저장하고 새로 녹음」 한 번', async () => {
+      const orig = AudioEngine.prototype.analyze; AudioEngine.prototype.analyze = function () { AudioEngine.prototype.analyze = orig; return Promise.reject(new Error('시험용 실패')); };
+      await tool('record'); await act('recordStart'); await sleep(1200); await act('recordStop'); await sleep(500); await idle(); await sleep(300);
+      ok(document.querySelector('[data-action="recordSave"]'), '「녹음 파일 저장」 없음'); await act('recordStart'); ok($('modal').open, '확인 창 없음');
+      const s0 = saves.length; await act('recordSaveStart'); await sleep(600);
+      ok(saves.length === s0 + 1, '이전 녹음 저장 안 됨'); ok(!$('modal').open && document.querySelector('[data-action="recordStopSave"]'), '새 녹음이 시작되지 않음');
+      await act('recordCancel'); await sleep(300);
+    });
+    await test('R23 일괄 변환 파일 하나는 ZIP 없이 그 파일로 바로 저장', async () => {
+      await tool('batch'); const el = $('batchInput'), dt = new DataTransfer(); dt.items.add(await fixture('tone.mp3', 'audio/mpeg')); el.files = dt.files; el.dispatchEvent(new Event('change', { bubbles: true })); await sleep(300);
+      ok(document.querySelector('[data-action="batchStart"]').textContent.includes('변환하고 저장'), '일괄 단추 이름');
+      const s0 = saves.length; await act('batchStart'); const t0 = Date.now(); while (Date.now() - t0 < 60000 && !document.querySelector('.batch-row.done,.batch-row.failed')) await sleep(200); await sleep(500);
+      const got = saves.slice(s0); ok(got.length === 1 && !/\.zip$/.test(got[0]), '저장 ' + got.join(','));
+      ok(document.querySelector('.batch-row small').textContent.includes('저장함'), '줄에 저장함 표시 없음'); const start = document.querySelector('[data-action="batchStart"]'); ok(start.disabled && start.textContent.includes('모두 변환했어요'), '할 일이 없는데 주 단추가 켜져 있음'); ok(document.querySelector('#auxPanel .saved-note'), '저장 안내 없음');
+      await act('batchClear'); await tool('convert'); return got[0];
+    });
+    await test('R24 구간이 하나면 구간별 저장은 창 없이 그 파일로 바로 저장', async () => {
+      await drop([await fixture('수업 소리 & 테스트.wav', 'audio/wav')]); await tool('classroom');
+      const s0 = saves.length; await act('exportClips'); ok(saves.length === s0 + 1 && !$('modal').open, '저장 ' + saves.slice(s0) + ' 창 ' + $('modal').open); await tool('convert');
+    });
+    await test('R25 구간별 저장을 취소하면 아무것도 저장하지 않음', async () => {
+      await drop([await fixture('수업 소리 & 테스트.wav', 'audio/wav')]); await tool('classroom'); $('splitSeconds').value = '0.1'; await act('splitFixed');
+      const s0 = saves.length; document.querySelector('[data-action="exportClips"]').click(); for (let i = 0; i < 300 && $('busy').hidden; i++) await sleep(5); await sleep(400); $('cancelBtn').click(); await sleep(800); await idle(); await sleep(200);
+      ok(saves.length === s0, '취소했는데 저장 ' + saves.slice(s0)); ok(!$('modal').open, '취소했는데 창이 열림');
+      await act('undo'); await tool('convert');
+    });
+    await test('R26 저장한 뒤 이름을 바꾸면 「새 이름으로 저장」 · 같은 결과는 다시 변환하지 않음 · 두 번 눌러도 한 번', async () => {
+      await tool('convert'); await click('#headerExport'); await setField('outputName', '새_이름_시험', 'special');
+      ok($('resultCard').textContent.includes('이름을 바꿨어요'), '이름 바뀜 안내 없음'); const btn = document.querySelector('#resultCard [data-action="download"]'); ok(btn.textContent.includes('새 이름으로 저장') && btn.classList.contains('primary'), '새 이름 저장 단추');
+      let s0 = saves.length; await act('download'); ok(saves.length === s0 + 1 && saves.at(-1).startsWith('새_이름_시험'), '새 이름 저장 ' + saves.slice(s0)); ok($('resultCard').textContent.includes('저장했어요'), '저장 상태로 돌아오지 않음');
+      await sleep(1600); s0 = saves.length; $('headerExport').click(); await sleep(120); ok($('busy').hidden && saves.length === s0 + 1, '같은 결과인데 다시 변환함');
+      $('headerExport').click(); await sleep(120); ok(saves.length === s0 + 1, '두 번 눌러 두 번 저장됨');
+    });
+    await test('R27 저장 안 한 녹음 위에 새로 녹음·다른 파일 열기는 먼저 물어보고 한 번에 저장', async () => {
+      await tool('record'); await act('recordStart'); await sleep(1200); await act('recordStop'); await sleep(500); await idle(); await sleep(300); ok(warns(), '열어 둔 녹음에 닫기 경고 없음');
+      await tool('record'); await act('recordStart'); ok($('modal').open && $('modalContent').textContent.includes('편집 중인 녹음'), '새로 녹음하기 전에 묻지 않음');
+      let s0 = saves.length; await act('recordExportStart'); await sleep(500); ok(saves.length === s0 + 1, '저장하고 새로 녹음: 저장 안 됨'); ok(document.querySelector('[data-action="recordStopSave"]'), '새 녹음이 시작되지 않음');
+      await act('recordCancel'); await sleep(300); ok(!warns(), '저장했는데 경고');
+      await act('recordStart'); await sleep(1000); await act('recordStop'); await sleep(500); await idle(); await sleep(300);
+      document.querySelector('.top-bar [data-action="open"]').click(); await sleep(200); ok($('modal').open && $('modalContent').textContent.includes('다른 파일을 열면'), '다른 파일 열기 전에 묻지 않음');
+      s0 = saves.length; await act('recordSaveNow'); ok(saves.length === s0 + 1 && !warns(), '녹음 먼저 저장');
+    });
+    await test('R28 Ctrl/Cmd+S는 웹 페이지 대신 소리를 저장', async () => {
+      await tool('convert'); await sleep(1600); const s0 = saves.length; const e = new KeyboardEvent('keydown', { key: 's', code: 'KeyS', ctrlKey: true, bubbles: true, cancelable: true }); document.body.dispatchEvent(e); await sleep(300); await idle(); await sleep(200);
+      ok(e.defaultPrevented, '페이지 저장을 막지 않음'); ok(saves.length === s0 + 1, '저장 안 됨 ' + saves.slice(s0));
+    });
+    await test('R29 바로 저장 중 파일 분석을 취소하면 내려받지 않고 녹음 원본을 보관', async () => {
+      const orig = AudioEngine.prototype.analyze; AudioEngine.prototype.analyze = function () { AudioEngine.prototype.analyze = orig; return new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error('시험용 취소'), { code: 'CANCELLED' })), 900)); };
+      await tool('record'); await act('recordStart'); await sleep(1000); const s0 = saves.length; document.querySelector('[data-action="recordStopSave"]').click();
+      for (let i = 0; i < 200 && $('busy').hidden; i++) await sleep(10); await sleep(200); $('cancelBtn').click(); await sleep(1200); await idle(); await sleep(300);
+      ok(saves.length === s0, '취소했는데 저장 ' + saves.slice(s0)); ok(document.querySelector('[data-action="recordSave"]')?.textContent.trim().endsWith('녹음 파일 저장'), '녹음 원본 보관 단추 없음'); ok(warns(), '보관 중인 녹음에 닫기 경고 없음');
+      await act('recordSave'); ok(!warns(), '저장했는데 경고'); await tool('convert');
     });
     return { passed: results.filter(r => r.ok).length, failed: results.filter(r => !r.ok), results };
   };

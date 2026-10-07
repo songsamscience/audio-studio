@@ -6,6 +6,8 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  // Record what would be saved (file names) without really writing to the Downloads folder.
+  const saves = []; const origClick = HTMLAnchorElement.prototype.click; HTMLAnchorElement.prototype.click = function () { if (this.download) { saves.push(this.download); return; } return origClick.call(this); };
   const blobs = [];
   const origURL = URL.createObjectURL.bind(URL);
   URL.createObjectURL = b => { if (b instanceof Blob) blobs.push(b); return origURL(b); };
@@ -24,7 +26,7 @@
   const seek = async t => { $('seek').value = t; $('seek').dispatchEvent(new Event('change', { bubbles: true })); await sleep(120); };
   const resetEdits = async () => { await tool('edit'); await act('resetEdits'); await tool('convert'); };
   const finalSeconds = () => { const m = $('clipSummary').textContent.match(/최종 (\d+):(\d+\.\d+)/); return m ? Number(m[1]) * 60 + Number(m[2]) : NaN; };
-  const convert = async () => { const rc = $('resultCard'), was = rc.textContent; document.querySelector('#panelBody [data-action="export"]').click(); await sleep(300); await idle(180000); await sleep(200); if (rc.hidden || rc.textContent === was || !rc.textContent.includes('변환이 완료')) throw new Error('변환 실패: ' + toastText()); return rc.querySelector('.result-body p').textContent; };
+  const convert = async () => { const rc = $('resultCard'), was = rc.textContent, n0 = saves.length; document.querySelector('#panelBody [data-action="export"]').click(); await sleep(300); await idle(180000); await sleep(200); if (rc.hidden || rc.textContent === was || !rc.textContent.includes('저장했어요')) throw new Error('변환 실패: ' + toastText()); if (saves.length !== n0 + 1) throw new Error('한 번 눌렀는데 저장(다운로드) ' + (saves.length - n0) + '번'); return rc.querySelector('.result-body p').textContent; };
   const download = async () => { const n = blobs.length; await act('download'); await sleep(200); const b = blobs.slice(n).find(x => !x.type.startsWith('application/json')); if (!b) throw new Error('다운로드 Blob 없음'); return b; };
   let ctx;
   const analyse = async blob => { ctx = ctx || new AudioContext(); const buf = await ctx.decodeAudioData(await blob.arrayBuffer()); const ch = i => buf.getChannelData(Math.min(i, buf.numberOfChannels - 1)); const stat = (from = 0, to = buf.duration, c = 0) => { const d = ch(c), s = Math.floor(from * buf.sampleRate), e = Math.min(d.length, Math.floor(to * buf.sampleRate)); let sum = 0, cross = 0; for (let i = s; i < e; i++) { sum += d[i] * d[i]; if (i > s && d[i - 1] <= 0 && d[i] > 0) cross++; } return { rms: Math.sqrt(sum / Math.max(1, e - s)), hz: Math.round(cross / Math.max(1e-9, (e - s) / buf.sampleRate)) }; }; return { duration: buf.duration, channels: buf.numberOfChannels, rate: buf.sampleRate, stat }; };
@@ -98,7 +100,7 @@
     await test('09 북마크 · 북마크별 파일 · ZIP', async () => {
       await tool('classroom'); await seek(1.5); $('bookmarkName').value = '도입'; await act('bookmark'); await seek(3); $('bookmarkName').value = '전개'; await act('bookmark');
       ok(document.querySelectorAll('.bookmark-row').length === 2, '북마크 수');
-      await act('exportBookmarks'); ok($('modal').open, '구간 파일 창 안 열림');
+      const n0 = blobs.length; await act('exportBookmarks'); ok($('modal').open, '구간 파일 창 안 열림'); ok(blobs.slice(n0).some(b => b.type === 'application/zip'), '한 번에 ZIP 저장 안 됨');
       const rows = [...document.querySelectorAll('#modalContent .batch-row small')].map(x => x.textContent);
       ok(rows.length === 3, '구간 파일 ' + rows.length);
       const n = blobs.length; await click('[data-action="segmentZip"]'); const zip = blobs.slice(n).find(b => b.type === 'application/zip');
@@ -129,8 +131,8 @@
       await open('video-with-audio.mp4', 'video/mp4');
       ok(document.querySelectorAll('#convertMenu .catalog-group').length === 1, '영상 메뉴 갈래');
       await click('[data-menu="x-m4a"]'); const info = await convert(); ok(info.startsWith('aac'), info);
-      await click('[data-action="toggleMenu"]'); await click('[data-menu="x-copy"]'); ok($('modal').open, '추출 확인 창');
-      await act('copyExtractConfirm'); ok($('resultCard').textContent.includes('원본 코덱 그대로'), '원본 그대로 결과 아님'); return { info };
+      await click('[data-action="toggleMenu"]'); const n0 = blobs.length; await click('[data-menu="x-copy"]'); ok(!$('modal').open, '확인 창 없이 바로 저장해야 함');
+      ok($('resultCard').textContent.includes('원본 코덱 그대로'), '원본 그대로 결과 아님'); ok(blobs.slice(n0).length >= 1, '원본 그대로 저장 안 됨'); return { info };
     });
     await test('14 다중 오디오 트랙 선택', async () => {
       await open('video-multi-track.mp4', 'video/mp4'); const sel = $('audioTrack'); ok(sel && sel.options.length === 2, '트랙 목록');
@@ -166,7 +168,8 @@
     });
     await test('19 일괄 변환 (손상 파일 1개 포함) · ZIP', async () => {
       await tool('batch'); await input('batchInput', [await fixture('tone.mp3', 'audio/mpeg'), await fixture('corrupt.mp3', 'audio/mpeg'), await fixture('tone-mono-22050.wav', 'audio/wav')]);
-      await act('batchStart'); const t0 = Date.now(); while (Date.now() - t0 < 120000 && document.querySelectorAll('.batch-row.done,.batch-row.failed').length < 3) await sleep(300);
+      const n0 = blobs.length; await act('batchStart'); const t0 = Date.now(); while (Date.now() - t0 < 120000 && document.querySelectorAll('.batch-row.done,.batch-row.failed').length < 3) await sleep(300); await sleep(500);
+      ok(blobs.slice(n0).some(b => b.type === 'application/zip'), '끝나면 ZIP 하나로 바로 저장 안 됨');
       const done = document.querySelectorAll('.batch-row.done').length, failed = document.querySelectorAll('.batch-row.failed').length;
       ok(done === 2 && failed === 1, `완료 ${done} 실패 ${failed}`);
       const n = blobs.length; await act('batchZip'); ok(blobs.slice(n).some(b => b.type === 'application/zip'), 'ZIP 없음');

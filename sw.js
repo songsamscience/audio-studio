@@ -1,6 +1,6 @@
 /* Register only after the user explicitly chooses offline preparation.
  * Bump VERSION whenever any app/engine asset changes. No media is cached. */
-const VERSION = 'songsam-audio-static-v1.4.0';
+const VERSION = 'songsam-audio-static-v1.4.1';
 const PREFIX = 'songsam-audio-static-';
 const FILES = [
   'index.html', 'style.css', 'theme.js', 'app.js', 'model.js', 'engine.js',
