@@ -225,7 +225,7 @@ function metadata(json,track=0) {
   if(!audio.length) fail('이 영상에는 추출할 소리가 없습니다.','NO_AUDIO');
   if(!audio[track]) fail('선택한 오디오 트랙을 찾지 못했습니다. 다른 트랙을 선택해 주세요.','TRACK');
   const s=audio[track], duration=num(s.duration,num(json.format?.duration,0));
-  const bitrate=num(s.bit_rate,0)>0?num(s.bit_rate)/1000:null;
+  const bitrate=num(s.bit_rate,0)>0&&num(s.bit_rate)<2**31?num(s.bit_rate)/1000:null; // Ogg Vorbis with no nominal bitrate reports 2^32−2
   // Embedded cover art is a picture stream too; only a real moving picture counts as video.
   const still=t=>Number(t.disposition?.attached_pic)===1||(/^(png|mjpeg|bmp|gif|webp|tiff)$/.test(t.codec_name||'')&&(Number(t.nb_frames)>0?Number(t.nb_frames)<=1:!frameRate(t.avg_frame_rate)));
   const picture=(json.streams||[]).find(t=>t.codec_type==='video'&&!still(t));
@@ -536,10 +536,14 @@ async function copyExtract(data){
   const bitrate=(s.metadata.bitrate||1500)*1000/8;
   await ensureSpace((end-start)*bitrate*1.2);
   const job=await scratch('copy.'+f.extension),[final]=job.paths;
-  const args=['-ss',String(start),'-i',s.path,'-t',String(end-start),'-map',`0:a:${s.track}`,'-vn','-sn','-dn','-c:a','copy','-map_metadata',data.metadataMode==='keep'?'0':'-1',...(key==='wav'?['-rf64','auto']:[]),'-f',f.muxer,final];
+  const flac=key==='flac';
+  // Input -ss lands on the previous (video) keyframe and copy would keep everything from there; the output -ss 0 drops
+  // the packets before the selection. A copied FLAC part would keep the source header (whole length), so it is
+  // re-compressed losslessly instead (same samples).
+  const args=['-ss',String(start),'-i',s.path,'-ss','0','-t',String(end-start),'-map',`0:a:${s.track}`,'-vn','-sn','-dn','-c:a',flac?'flac':'copy','-map_metadata',data.metadataMode==='keep'?'0':'-1',...(key==='wav'?['-rf64','auto']:[]),'-f',f.muxer,final];
   try{
     status('processing','원본 소리 추출 중');run(args,false,{phase:'processing',label:'원본 소리 추출 중',duration:end-start});
-    return finishOutput(final,f,{length:end-start,notes:['재인코딩 없는 구간 추출은 코덱 패킷 경계 때문에 시작·끝에 작은 차이가 있을 수 있습니다.'],listen:data.listen,pcmRate:data.pcmRate,copy:true});
+    return finishOutput(final,f,{length:end-start,notes:[flac?'FLAC은 길이 정보가 맞도록 무손실로 다시 압축했습니다(소리는 원본과 같습니다).':'재인코딩 없는 구간 추출은 코덱 패킷 경계 때문에 시작·끝에 작은 차이가 있을 수 있습니다.'],listen:data.listen,pcmRate:data.pcmRate,copy:true});
   }finally{await job.release();}
 }
 self.onmessage=async({data})=>{
